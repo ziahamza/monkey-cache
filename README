@@ -1,0 +1,16 @@
+Monkey Cache Plugin
+=======================
+
+This is a monkey web server plugin adds super fast jets to already
+high speed monkey server. Its still in its initial stages and probably
+doent cache enough to make any significant performance difference.
+
+Installation
+============
+
+    cd monkey
+    git clone https://github.com/ziahamza/monkey-cache.git plugins/fastcgi
+    ./configure
+    make
+    # edit conf/
+    ./bin/monkey

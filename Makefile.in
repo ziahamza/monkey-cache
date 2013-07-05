@@ -1,0 +1,14 @@
+all: monkey-cache.so
+include ../Make.common
+
+CC	= @echo "  CC   $(_PATH)/$@"; $CC
+CC_QUIET= @echo -n; $CC
+CFLAGS	= $CFLAGS
+LDFLAGS = $LDFLAGS
+DEFS    = $DEFS
+CACHE_OBJECTS = cache.o
+
+-include $(CACHE_OBJECTS:.o=.d)
+
+monkey-cache.so: $(LIANA_OBJECTS)
+	$(CC) $(CFLAGS) $(LDFLAGS) $(DEFS) -shared -o $@ $^ -lc
