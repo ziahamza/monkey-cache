@@ -8,9 +8,9 @@ doent cache enough to make any significant performance difference.
 Installation
 ============
 
+    # git clone git://git.monkey-project.com/monkey
     cd monkey
-    git clone https://github.com/ziahamza/monkey-cache.git plugins/fastcgi
+    git clone https://github.com/ziahamza/monkey-cache.git plugins/cache
     ./configure
     make
-    # edit conf/
     ./bin/monkey
