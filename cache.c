@@ -34,7 +34,7 @@
 
 #include "MKPlugin.h"
 
-MONKEY_PLUGIN("Cache",         /* shortname */
+MONKEY_PLUGIN("cache",         /* shortname */
               "Monkey Cache", /* name */
               VERSION,        /* version */
               MK_PLUGIN_NETWORK_IO); /* hooks */
