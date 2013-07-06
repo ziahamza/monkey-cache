@@ -37,14 +37,12 @@
 MONKEY_PLUGIN("cache",         /* shortname */
               "Monkey Cache", /* name */
               VERSION,        /* version */
-              MK_PLUGIN_NETWORK_IO); /* hooks */
+              MK_PLUGIN_STAGE_30); /* hooks */
 
 
 int _mkp_init(struct plugin_api **api, char *confdir)
 {
     (void) confdir;
-
-    mk_info("cache init");
 
     mk_api = *api;
 
@@ -53,7 +51,6 @@ int _mkp_init(struct plugin_api **api, char *confdir)
 
 void _mkp_exit()
 {
-    mk_info("cache exiting");
 }
 
 int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
