@@ -10,5 +10,5 @@ CACHE_OBJECTS = cache.o
 
 -include $(CACHE_OBJECTS:.o=.d)
 
-monkey-cache.so: $(LIANA_OBJECTS)
+monkey-cache.so: $(CACHE_OBJECTS)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(DEFS) -shared -o $@ $^ -lc

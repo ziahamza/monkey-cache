@@ -62,5 +62,11 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 
     mk_info("handling stage 30 :)");
 
+    if (sr->file_info.size < 0 || sr->file_info.is_file == MK_FALSE) {
+        mk_info("not a file, passing on the file :)");
+        return MK_PLUGIN_RET_NOT_ME;
+    }
+
+
     return MK_PLUGIN_RET_NOT_ME;
 }
