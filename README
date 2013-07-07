@@ -5,6 +5,11 @@ This is a monkey web server plugin adds super fast jets to already
 high speed monkey server. Its still in its initial stages and probably
 doent cache enough to make any significant performance difference.
 
+Status
+======
+Just bypasses the monkey static file serving and handles it on its own with
+plain text mime type, caching still comming :)
+
 Installation
 ============
 

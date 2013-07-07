@@ -2,6 +2,8 @@
 *.o
 *.d
 
+Makefile
+
 # Libraries
 *.lib
 *.a
