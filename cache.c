@@ -1,27 +1,5 @@
 /* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
 
-/*  Monkey HTTP Daemon
- *  ------------------
- *  Copyright (C) 2001-2012, Eduardo Silva P. <edsiper@gmail.com>
- *
- *  This library is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU Lesser General Public
- *  License as published by the Free Software Foundation; either
- *  version 2.1 of the License, or (at your option) any later version.
- *
- *  This library is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  Lesser General Public License for more details.
- *
- *  You should have received a copy of the GNU Lesser General Public
- *  License along with this library; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
- *  MA 02110-1301  USA
- */
-
-#define _GNU_SOURCE
-
 #include <stdio.h>
 #include <string.h>
 
@@ -33,7 +11,6 @@
 #include <fcntl.h>
 
 #include "MKPlugin.h"
-#include "mk_mimetype.h"
 
 MONKEY_PLUGIN("cache",         /* shortname */
               "Monkey Cache", /* name */
@@ -62,9 +39,6 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 {
 
     (void) plugin;
-    (void) cs;
-    (void) sr;
-
 
     if (sr->file_info.size < 0 || sr->file_info.is_file == MK_FALSE || sr->file_info.read_access == MK_FALSE) {
         mk_info("not a file, passing on the file :)");
@@ -90,7 +64,6 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 
     mk_api->socket_send_file(cs->socket, sr->fd_file,
                                  &sr->bytes_offset, sr->bytes_to_send);
-
 
     return MK_PLUGIN_RET_CONTINUE;
 }
