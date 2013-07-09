@@ -15,7 +15,7 @@
 MONKEY_PLUGIN("cache",         /* shortname */
               "Monkey Cache", /* name */
               VERSION,        /* version */
-              MK_PLUGIN_STAGE_30); /* hooks */
+              /*MK_PLUGIN_CORE_PRCTX | MK_PLUGIN_CORE_THCTX | */MK_PLUGIN_STAGE_30); /* hooks */
 
 
 const mk_pointer mk_default_mime = mk_pointer_init("text/plain\r\n");
@@ -37,15 +37,16 @@ void _mkp_exit()
 int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
                   struct session_request *sr)
 {
-
     (void) plugin;
 
-    if (sr->file_info.size < 0 || sr->file_info.is_file == MK_FALSE || sr->file_info.read_access == MK_FALSE) {
+    if (sr->file_info.size < 0 || sr->file_info.is_file == MK_FALSE || sr->file_info.read_access == MK_FALSE || sr->method != HTTP_METHOD_GET) {
         mk_info("not a file, passing on the file :)");
         return MK_PLUGIN_RET_NOT_ME;
     }
 
-    mk_info("cache plugin taking over the request :)");
+    // mk_info("cache plugin taking over the request :)");
+
+    sr->headers.last_modified = sr->file_info.last_modification;
 
     mk_api->header_set_http_status(sr, MK_HTTP_OK);
 
@@ -56,14 +57,20 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     if (sr->fd_file == -1) {
         return MK_PLUGIN_RET_NOT_ME;
     }
+
     sr->bytes_to_send = sr->file_info.size;
 
     sr->headers.content_type = mk_default_mime;
 
     mk_api->header_send(cs->socket, cs, sr);
 
-    mk_api->socket_send_file(cs->socket, sr->fd_file,
+    long nbytes = mk_api->socket_send_file(cs->socket, sr->fd_file,
                                  &sr->bytes_offset, sr->bytes_to_send);
+
+    sr->bytes_to_send -= nbytes;
+    if (sr->bytes_to_send == 0) {
+        mk_api->socket_cork_flag(cs->socket, TCP_CORK_OFF);
+    }
 
     return MK_PLUGIN_RET_CONTINUE;
 }
