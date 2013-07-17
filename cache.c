@@ -111,6 +111,12 @@ int http_send_file(struct cache_req_t *req)
         req->bytes_to_send -= nbytes;
     }
 
+    if (nbytes < 0) {
+      perror("cannto send file!");
+
+      return -1;
+    }
+
     return req->bytes_to_send;
 }
 
@@ -161,7 +167,7 @@ int _mkp_stage_40(struct client_session *cs, struct session_request *sr) {
 
   struct cache_req_t *req = cache_reqs_get(cs->socket, sr);
   if (req == NULL) {
-    mk_info("not our request!");
+    mk_info("not our request from stage 40!");
     return MK_PLUGIN_RET_NOT_ME;
   }
 
