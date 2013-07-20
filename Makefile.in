@@ -3,7 +3,7 @@ include ../Make.common
 
 CC	= @echo "  CC   $(_PATH)/$@"; $CC
 CC_QUIET= @echo -n; $CC
-CFLAGS	= $CFLAGS
+CFLAGS	= $CFLAGS -lm
 LDFLAGS = $LDFLAGS
 DEFS    = $DEFS
 CACHE_OBJECTS = cache.o
