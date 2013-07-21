@@ -170,7 +170,7 @@ int http_send_mmap_zcpy(struct cache_req_t *req) {
       vec.iov_len = req->bytes_to_send;
 
       //printf("pumping data to pipe!\n");
-      pbytes = vmsplice(fds[1], &vec, 1, SPLICE_F_NONBLOCK);
+      pbytes = vmsplice(fds[1], &vec, 1, SPLICE_F_NONBLOCK | SPLICE_F_GIFT);
       if (pbytes < 0) {
         perror("cannot read to pipe buffer!!");
         printf("bytes offset: %ld bytes to send: %ld mmap address: %p\n", req->bytes_offset, req->bytes_to_send, vec.iov_base);
@@ -299,7 +299,8 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     // sr->fd_file = open(sr->real_path.data, sr->file_info.flags_read_only);
     int size = ceil((double)sr->file_info.size / MMAP_SIZE) * MMAP_SIZE;
     req->fd_file = open(sr->real_path.data, sr->file_info.flags_read_only);
-    req->mmap = mmap(NULL, size, PROT_READ, MAP_PRIVATE | MAP_POPULATE | MAP_NORESERVE, req->fd_file, 0);
+    req->mmap = mmap(NULL, size, PROT_READ, MAP_PRIVATE, req->fd_file, 0);
+
     req->mmap_len = size;
 
     if (req->fd_file == -1 || req->mmap == (void* )-1) {
