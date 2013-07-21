@@ -3,10 +3,10 @@ include ../Make.common
 
 CC	= @echo "  CC   $(_PATH)/$@"; $CC
 CC_QUIET= @echo -n; $CC
-CFLAGS	= $CFLAGS -lm
+CFLAGS	= $CFLAGS
 LDFLAGS = $LDFLAGS
 DEFS    = $DEFS
-CACHE_OBJECTS = cache.o
+CACHE_OBJECTS = cache.o ht.o utils.o
 
 -include $(CACHE_OBJECTS:.o=.d)
 

@@ -24,35 +24,65 @@
 
 #include "MKPlugin.h"
 
+#include "ht.h"
+#include "utils.h"
+
 MONKEY_PLUGIN("cache",         /* shortname */
               "Monkey Cache", /* name */
               VERSION,        /* version */
               MK_PLUGIN_CORE_PRCTX | MK_PLUGIN_CORE_THCTX |  MK_PLUGIN_STAGE_30); /* hooks */
 
 pthread_key_t cache_pipe;
+pthread_key_t cache_reqs;
+
+struct table_t *inode_table;
+pthread_rwlock_t table_rwlock = PTHREAD_RWLOCK_INITIALIZER;
+
 int devnull;
 
-void cache_pipe_init() {
-  devnull = open("/dev/null", O_WRONLY);
-  int *fds = calloc(sizeof(int), 2);
+int createpipe(int *fds) {
+  int size = 128 * 1024;
   if (pipe2(fds, O_NONBLOCK | O_CLOEXEC) < 0) {
-    perror("cannot create a thread specific pipe!");
-    return;
+      perror("cannot create a thread specific pipe!");
+      return 0;
   }
 
   // optimisation on linux, increase pipe size
   fcntl(fds[1], F_SETPIPE_SZ, 128 * 1024);
+
+  return size;
+
+}
+
+void closepipe(int *fds) {
+  close(fds[0]);
+  close(fds[1]);
+}
+
+void cache_pipe_init() {
+  devnull = open("/dev/null", O_WRONLY);
+  int *fds = calloc(sizeof(int), 2);
+  createpipe(fds);
   pthread_setspecific(cache_pipe, fds);
 }
 
-pthread_key_t cache_reqs;
+struct cache_file_t {
+  int mmap_len;
+  void *mmap;
+
+  int pipe_buf[2];
+  int pipe_filled;
+  int pipe_cap;
+
+  struct stat st;
+};
+
 struct cache_req_t {
     int socket;
     struct session_request *sr;
 
     int fd_file;
-    void * mmap;
-    long mmap_len;
+    struct cache_file_t *file;
     long bytes_offset, bytes_to_send;
 
     struct mk_list _head;
@@ -115,7 +145,10 @@ int _mkp_init(struct plugin_api **api, char *confdir) {
     return 0;
 }
 
-void _mkp_exit() {}
+void _mkp_exit() {
+    table_free(inode_table);
+    // TODO: free cache_reqs
+}
 
 int _mkp_core_prctx(struct server_config *config) {
     (void) config;
@@ -124,6 +157,8 @@ int _mkp_core_prctx(struct server_config *config) {
 
     pthread_key_create(&cache_reqs, NULL);
     pthread_key_create(&cache_pipe, NULL);
+
+    inode_table = table_alloc();
 
     return 0;
 }
@@ -162,44 +197,81 @@ int http_send_mmap_zcpy(struct cache_req_t *req) {
 
     fds = pthread_getspecific(cache_pipe);
 
-    struct iovec vec;
+    struct cache_file_t *file = req->file;
     long nbytes = 1, pbytes = 1, cnt = 0;
 
-    while (req->bytes_to_send) {
-      vec.iov_base = req->mmap + req->bytes_offset;
-      vec.iov_len = req->bytes_to_send;
+    struct iovec vec = {
+      .iov_base = file->mmap + req->bytes_offset,
+      .iov_len = req->bytes_to_send
+    };
 
-      //printf("pumping data to pipe!\n");
-      pbytes = vmsplice(fds[1], &vec, 1, SPLICE_F_NONBLOCK | SPLICE_F_GIFT);
+    if (!file->pipe_filled) {
+        pbytes = vmsplice(file->pipe_buf[1], &vec, 1,
+            SPLICE_F_NONBLOCK | SPLICE_F_GIFT);
+
+        //printf("filled initial into file buffer %ld\n", pbytes);
+
       if (pbytes < 0) {
-        perror("cannot read to pipe buffer!!");
-        printf("bytes offset: %ld bytes to send: %ld mmap address: %p\n", req->bytes_offset, req->bytes_to_send, vec.iov_base);
+          perror("cannot read to pipe buffer!!");
+          printf(
+              "bytes offset: %ld bytes to send: %ld mmap address: %p\n",
+              req->bytes_offset, req->bytes_to_send, vec.iov_base);
+          return -1;
+        }
+        file->pipe_filled = pbytes;
+    }
+
+    pbytes = tee(file->pipe_buf[0], fds[1], file->pipe_filled,
+        SPLICE_F_NONBLOCK);
+    if (pbytes < 0) {
+        perror("cannot tee from file cache!");
         return -1;
-      }
-      //printf("bytes read in pipe buffer %ld\n", nbytes);
-      nbytes = splice(fds[0], NULL, req->socket, NULL, pbytes, SPLICE_F_NONBLOCK | SPLICE_F_MOVE);
-      if (nbytes < 0) {
-        flush_pipe(fds[0], pbytes);
-        if (errno == EAGAIN) {
-          //printf("socket could block, returning!");
+    }
+    //printf("written data from inital file buffer %ld\n", pbytes);
+
+    while (1) {
+        nbytes = splice(fds[0], NULL, req->socket, NULL, pbytes,
+            SPLICE_F_NONBLOCK | SPLICE_F_MOVE);
+        //printf("written data from pipe buffer %ld\n", nbytes);
+        if (nbytes < 0) {
+          flush_pipe(fds[0], pbytes);
+          if (errno == EAGAIN) {
+            //printf("socket could block, returning!");
+            break;
+          }
+          perror("cannot splice bytes into the socket");
+          return -1;
+        }
+
+        cnt++;
+
+        req->bytes_to_send -= nbytes;
+        req->bytes_offset += nbytes;
+
+        if (pbytes != nbytes) {
+          flush_pipe(fds[0], pbytes - nbytes);
+          // next iteration will probably block, return early
           break;
         }
-        perror("cannot splice bytes into the socket");
-        return -1;
-      }
 
-      cnt++;
+        if (!req->bytes_to_send) break;
 
-      req->bytes_to_send -= nbytes;
-      req->bytes_offset += nbytes;
+        vec.iov_base = file->mmap + req->bytes_offset;
+        vec.iov_len = req->bytes_to_send;
 
-      if (pbytes != nbytes) {
-        flush_pipe(fds[0], pbytes - nbytes);
-        // next iteration will probably block, return early
-        break;
-      }
+        pbytes = vmsplice(fds[1], &vec, 1,
+            SPLICE_F_NONBLOCK | SPLICE_F_GIFT);
 
-      //printf("got data into the socket!\n");
+        //printf("pumping data into pipe! %ld\n", pbytes);
+
+        if (pbytes < 0) {
+            perror("cannot read to pipe buffer!!");
+            printf(
+                "bytes offset: %ld bytes to send: %ld mmap address: %p\n",
+                req->bytes_offset, req->bytes_to_send, vec.iov_base);
+            return -1;
+        }
+
     }
 
     //printf("total splice iterations %ld\n", cnt);
@@ -212,7 +284,7 @@ int http_send_mmap(struct cache_req_t *req) {
     long nbytes = 1;
 
     while (nbytes > 0 && req->bytes_to_send) {
-      nbytes = mk_api->socket_send(req->socket, req->mmap + req->bytes_offset, req->bytes_to_send);
+      nbytes = mk_api->socket_send(req->socket, req->file->mmap + req->bytes_offset, req->bytes_to_send);
 
 
       if (nbytes < 0) {
@@ -242,9 +314,8 @@ int _mkp_event_write(int fd) {
         mk_info("no data to send, returning event_write!");
         return MK_PLUGIN_RET_EVENT_CLOSE;
     }
-    //printf("can write to our  request!\n");
     int ret = 0;
-    if (req->mmap != NULL) {
+    if (req->file->mmap != NULL || req->file->mmap != (void *) -1) {
         //mk_info("sending using mmap :)");
         ret = http_send_mmap_zcpy(req);
     }
@@ -270,6 +341,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
                   struct session_request *sr)
 {
     (void) plugin;
+    struct stat st;
 
     //mk_info("running stage 30");
 
@@ -296,28 +368,78 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     req->bytes_offset = 0;
     req->bytes_to_send = sr->file_info.size;
 
-    // sr->fd_file = open(sr->real_path.data, sr->file_info.flags_read_only);
-    int size = ceil((double)sr->file_info.size / MMAP_SIZE) * MMAP_SIZE;
-    req->fd_file = open(sr->real_path.data, sr->file_info.flags_read_only);
-    req->mmap = mmap(NULL, size, PROT_READ, MAP_PRIVATE, req->fd_file, 0);
+    stat(sr->real_path.data, &st);
+    //printf("\n\ntrying to get cache for path %s with inode %ld\n",
+    //    sr->real_path.data, st.st_ino);
 
-    req->mmap_len = size;
+    //printf("headers:\n%s\n", sr->uri_processed.data);
+    int cnt = 0;
+    while (1) {
+      int rc = pthread_rwlock_tryrdlock(&table_rwlock);
+      if (rc == EBUSY) {
+        if (cnt > 10) {
+          printf("tried locking too many times, giving up!");
+          return MK_PLUGIN_RET_NOT_ME;
+        }
 
-    if (req->fd_file == -1 || req->mmap == (void* )-1) {
-        perror("cannot open file!");
-        exit(0);
-        return MK_PLUGIN_RET_NOT_ME;
+        printf("could not get lock, trying again!\n");
+        cnt++;
+      }
+      else break;
     }
-    //printf("mmmap address: %p\n", req->mmap);
+    struct cache_file_t *file = table_get(inode_table, st.st_ino);
+    pthread_rwlock_unlock(&table_rwlock);
+    if (!file) {
+        pthread_rwlock_wrlock(&table_rwlock);
+        // another check in case its been already added
+        file = table_get(inode_table, st.st_ino);
+
+        if (!file) {
+            printf("creating a new file cache with path %s\n",
+                sr->real_path.data);
+            file = malloc(sizeof(struct cache_file_t));
+
+            int fd = open(sr->real_path.data,
+                sr->file_info.flags_read_only | O_NONBLOCK);
+            file->st = st;
+
+            file->mmap_len = ceil(
+                (double)sr->file_info.size / MMAP_SIZE) * MMAP_SIZE;
+
+            file->mmap = mmap(NULL, file->mmap_len,
+                PROT_READ, MAP_PRIVATE, fd, 0);
+            if (file->mmap == (void* ) -1) {
+                perror("cannot open file!");
+                exit(0);
+                return MK_PLUGIN_RET_NOT_ME;
+            }
+
+            file->pipe_cap = createpipe(file->pipe_buf);
+            file->pipe_filled = 0;
+            close(fd);
+
+            table_add(inode_table, st.st_ino, file);
+        }
+        pthread_rwlock_unlock(&table_rwlock);
+    }
+    else {
+        //printf("got file with inode: %ld\n", file->st.st_ino);
+    }
+
+    // sr->fd_file = open(sr->real_path.data, sr->file_info.flags_read_only);
+    req->fd_file = -1;
+    req->file = file;
+
+
 
     sr->headers.content_type = mk_default_mime;
 
     mk_api->header_send(cs->socket, cs, sr);
 
 
-    //mk_info("early write call!");
     if (_mkp_event_write(cs->socket) == MK_PLUGIN_RET_EVENT_CLOSE) {
-      return MK_PLUGIN_RET_CLOSE_CONX;
+      mk_api->socket_cork_flag(req->socket, TCP_CORK_OFF);
+      return MK_PLUGIN_RET_END;
     }
 
     mk_api->socket_cork_flag(req->socket, TCP_CORK_OFF);
@@ -332,13 +454,8 @@ void cleanup(int fd) {
       return;
     }
 
-    //mk_info("closing file fd and ending event write");
     if (req->fd_file >= 0)
         close(req->fd_file);
-
-    if (req->mmap != NULL)
-        munmap(req->mmap, req->mmap_len);
-
 
     cache_reqs_del(fd);
 
