@@ -180,20 +180,11 @@ int _mkp_event_write(int fd) {
         ret = http_send_mmap(req);
     }
     else {
-        //mk_info("mmap invalid, sending standard file");
+        mk_info("mmap invalid, sending standard file");
         ret = http_send_file(req);
     }
 
     if (ret <= 0) {
-        //mk_info("closing file fd and ending event write");
-        if (req->fd_file >= 0)
-            close(req->fd_file);
-
-        if (req->mmap != NULL)
-            munmap(req->mmap, req->mmap_len);
-
-
-        cache_reqs_del(fd);
 
         //mk_api->http_request_end(fd);
 
@@ -264,3 +255,41 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 }
 
 
+void cleanup(int fd) {
+    struct cache_req_t *req = cache_reqs_get(fd);
+    if (!req) {
+      return;
+    }
+
+    //mk_info("closing file fd and ending event write");
+    if (req->fd_file >= 0)
+        close(req->fd_file);
+
+    if (req->mmap != NULL)
+        munmap(req->mmap, req->mmap_len);
+
+
+    cache_reqs_del(fd);
+
+
+}
+int _mkp_event_close(int socket)
+{
+  //mk_info("closing a socket");
+
+  cleanup(socket);
+  return MK_PLUGIN_RET_EVENT_NEXT;
+}
+
+int _mkp_event_error(int socket)
+{
+  mk_info("got an error with a socket!");
+  cleanup(socket);
+	return MK_PLUGIN_RET_EVENT_NEXT;
+}
+int _mkp_event_timeout(int socket)
+{
+  mk_info("got an error with a socket!");
+  cleanup(socket);
+	return MK_PLUGIN_RET_EVENT_NEXT;
+}
