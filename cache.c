@@ -8,7 +8,12 @@
 #include <sys/socket.h>
 #include <sys/sendfile.h>
 #include <netdb.h>
+
+#define _GNU_SOURCE
+#define __USE_GNU
+
 #include <fcntl.h>
+#include <unistd.h>
 
 #include <sys/mman.h>
 #define MMAP_SIZE sysconf(_SC_PAGE_SIZE)
@@ -24,8 +29,23 @@ MONKEY_PLUGIN("cache",         /* shortname */
               VERSION,        /* version */
               MK_PLUGIN_CORE_PRCTX | MK_PLUGIN_CORE_THCTX |  MK_PLUGIN_STAGE_30); /* hooks */
 
-pthread_key_t cache_reqs;
+pthread_key_t cache_pipe;
+int devnull;
 
+void cache_pipe_init() {
+  devnull = open("/dev/null", O_WRONLY);
+  int *fds = calloc(sizeof(int), 2);
+  if (pipe2(fds, O_NONBLOCK | O_CLOEXEC) < 0) {
+    perror("cannot create a thread specific pipe!");
+    return;
+  }
+
+  // optimisation on linux, increase pipe size
+  fcntl(fds[1], F_SETPIPE_SZ, 128 * 1024);
+  pthread_setspecific(cache_pipe, fds);
+}
+
+pthread_key_t cache_reqs;
 struct cache_req_t {
     int socket;
     struct session_request *sr;
@@ -103,6 +123,7 @@ int _mkp_core_prctx(struct server_config *config) {
     mk_info("cache: a new process ctx!!");
 
     pthread_key_create(&cache_reqs, NULL);
+    pthread_key_create(&cache_pipe, NULL);
 
     return 0;
 }
@@ -110,15 +131,11 @@ void _mkp_core_thctx() {
     mk_info("cache: a new thread ctx!!");
 
     cache_reqs_init();
+    cache_pipe_init();
 }
 
 int http_send_file(struct cache_req_t *req)
 {
-    if (req->bytes_to_send <= 0) {
-        mk_info("no data to send, returning from send file!");
-        return 0;
-    }
-
     long nbytes = mk_api->socket_send_file(req->socket, req->fd_file,
                                  &req->bytes_offset, req->bytes_to_send);
 
@@ -135,12 +152,62 @@ int http_send_file(struct cache_req_t *req)
     return req->bytes_to_send;
 }
 
-int http_send_mmap(struct cache_req_t *req) {
+void flush_pipe(int wfd, int size) {
+    //printf("flushing what ever is left of pipe: %d\n", size);
+    splice(wfd, NULL, devnull, NULL, size, SPLICE_F_MOVE);
+}
 
-    if (req->bytes_to_send <= 0) {
-        mk_info("no data to send, returning from send file!");
-        return 0;
+int http_send_mmap_zcpy(struct cache_req_t *req) {
+    int *fds;
+
+    fds = pthread_getspecific(cache_pipe);
+
+    struct iovec vec;
+    long nbytes = 1, pbytes = 1, cnt = 0;
+
+    while (req->bytes_to_send) {
+      vec.iov_base = req->mmap + req->bytes_offset;
+      vec.iov_len = req->bytes_to_send;
+
+      //printf("pumping data to pipe!\n");
+      pbytes = vmsplice(fds[1], &vec, 1, SPLICE_F_NONBLOCK);
+      if (pbytes < 0) {
+        perror("cannot read to pipe buffer!!");
+        printf("bytes offset: %ld bytes to send: %ld mmap address: %p\n", req->bytes_offset, req->bytes_to_send, vec.iov_base);
+        return -1;
+      }
+      //printf("bytes read in pipe buffer %ld\n", nbytes);
+      nbytes = splice(fds[0], NULL, req->socket, NULL, pbytes, SPLICE_F_NONBLOCK | SPLICE_F_MOVE);
+      if (nbytes < 0) {
+        flush_pipe(fds[0], pbytes);
+        if (errno == EAGAIN) {
+          //printf("socket could block, returning!");
+          break;
+        }
+        perror("cannot splice bytes into the socket");
+        return -1;
+      }
+
+      cnt++;
+
+      req->bytes_to_send -= nbytes;
+      req->bytes_offset += nbytes;
+
+      if (pbytes != nbytes) {
+        flush_pipe(fds[0], pbytes - nbytes);
+        // next iteration will probably block, return early
+        break;
+      }
+
+      //printf("got data into the socket!\n");
     }
+
+    //printf("total splice iterations %ld\n", cnt);
+    //printf("bytes left: %ld\n", req->bytes_to_send);
+
+    return req->bytes_to_send;
+}
+int http_send_mmap(struct cache_req_t *req) {
 
     long nbytes = 1;
 
@@ -162,7 +229,6 @@ int http_send_mmap(struct cache_req_t *req) {
 
     }
 
-
     return req->bytes_to_send;
 }
 
@@ -172,12 +238,15 @@ int _mkp_event_write(int fd) {
         //mk_info("write event, but not of our request");
         return MK_PLUGIN_RET_EVENT_NEXT;
     }
-
-    //mk_info("can write to our  request!");
+    if (req->bytes_to_send <= 0) {
+        mk_info("no data to send, returning event_write!");
+        return MK_PLUGIN_RET_EVENT_CLOSE;
+    }
+    //printf("can write to our  request!\n");
     int ret = 0;
     if (req->mmap != NULL) {
         //mk_info("sending using mmap :)");
-        ret = http_send_mmap(req);
+        ret = http_send_mmap_zcpy(req);
     }
     else {
         mk_info("mmap invalid, sending standard file");
@@ -191,7 +260,7 @@ int _mkp_event_write(int fd) {
         return MK_PLUGIN_RET_EVENT_CLOSE;
     }
     else {
-        //mk_info("send some data, iterating event write again!");
+        //printf("send some data, iterating event write again!\n");
 
         return MK_PLUGIN_RET_EVENT_OWNED;
     }
@@ -223,21 +292,22 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     sr->headers.content_length = sr->file_info.size;
     sr->headers.real_length = sr->file_info.size;
 
-    // sr->fd_file = open(sr->real_path.data, sr->file_info.flags_read_only);
-    int size = ceil((double)sr->file_info.size / MMAP_SIZE) * MMAP_SIZE;
-    req->fd_file = open(sr->real_path.data, sr->file_info.flags_read_only);
-    req->mmap = mmap(NULL, size, PROT_READ, MAP_PRIVATE, req->fd_file, 0);
-    req->mmap_len = size;
-
-
-    if (req->fd_file == -1) {
-        perror("cannot open file!");
-        return MK_PLUGIN_RET_NOT_ME;
-    }
-
     // sr->bytes_to_send = sr->file_info.size;
     req->bytes_offset = 0;
     req->bytes_to_send = sr->file_info.size;
+
+    // sr->fd_file = open(sr->real_path.data, sr->file_info.flags_read_only);
+    int size = ceil((double)sr->file_info.size / MMAP_SIZE) * MMAP_SIZE;
+    req->fd_file = open(sr->real_path.data, sr->file_info.flags_read_only);
+    req->mmap = mmap(NULL, size, PROT_READ, MAP_PRIVATE | MAP_POPULATE | MAP_NORESERVE, req->fd_file, 0);
+    req->mmap_len = size;
+
+    if (req->fd_file == -1 || req->mmap == (void* )-1) {
+        perror("cannot open file!");
+        exit(0);
+        return MK_PLUGIN_RET_NOT_ME;
+    }
+    //printf("mmmap address: %p\n", req->mmap);
 
     sr->headers.content_type = mk_default_mime;
 
