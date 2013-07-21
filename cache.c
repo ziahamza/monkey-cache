@@ -48,7 +48,7 @@ int createpipe(int *fds) {
   }
 
   // optimisation on linux, increase pipe size
-  fcntl(fds[1], F_SETPIPE_SZ, 128 * 1024);
+  fcntl(fds[1], F_SETPIPE_SZ, 512 * 1024);
 
   return size;
 
