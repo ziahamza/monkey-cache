@@ -128,6 +128,7 @@ void cache_reqs_del(int socket) {
       //mk_info("removing a requet!");
       mk_list_del(&req->_head);
       free(req);
+      return;
     };
   }
 
@@ -212,6 +213,10 @@ int http_send_mmap_zcpy(struct cache_req_t *req) {
         //printf("filled initial into file buffer %ld\n", pbytes);
 
       if (pbytes < 0) {
+          if (errno == EAGAIN) {
+              printf("reading from memory to pipe blocking!\n");
+              goto FINISH_SEND;
+          }
           perror("cannot read to pipe buffer!!");
           printf(
               "bytes offset: %ld bytes to send: %ld mmap address: %p\n",
@@ -221,13 +226,27 @@ int http_send_mmap_zcpy(struct cache_req_t *req) {
         file->pipe_filled = pbytes;
     }
 
-    pbytes = tee(file->pipe_buf[0], fds[1], file->pipe_filled,
-        SPLICE_F_NONBLOCK);
+    if (req->bytes_offset < file->pipe_filled) {
+        pbytes = tee(file->pipe_buf[0], fds[1], file->pipe_filled,
+          SPLICE_F_NONBLOCK);
+        //printf("sending data from initial file cache!\n");
+    }
+    else {
+        pbytes = vmsplice(fds[1], &vec, 1,
+            SPLICE_F_NONBLOCK | SPLICE_F_GIFT);
+    }
     if (pbytes < 0) {
-        perror("cannot tee from file cache!");
+
+        if (errno == EAGAIN) {
+            printf("reading from memory to pipe blocking!\n");
+            goto FINISH_SEND;
+        }
+        perror("cannot read initial data to pipe buffer!!");
+        printf(
+            "bytes offset: %ld bytes to send: %ld mmap address: %p\n",
+            req->bytes_offset, req->bytes_to_send, vec.iov_base);
         return -1;
     }
-    //printf("written data from inital file buffer %ld\n", pbytes);
 
     while (1) {
         nbytes = splice(fds[0], NULL, req->socket, NULL, pbytes,
@@ -265,6 +284,12 @@ int http_send_mmap_zcpy(struct cache_req_t *req) {
         //printf("pumping data into pipe! %ld\n", pbytes);
 
         if (pbytes < 0) {
+
+            if (errno == EAGAIN) {
+                printf("reading from memory to pipe blocking!\n");
+                goto FINISH_SEND;
+            }
+
             perror("cannot read to pipe buffer!!");
             printf(
                 "bytes offset: %ld bytes to send: %ld mmap address: %p\n",
@@ -274,6 +299,7 @@ int http_send_mmap_zcpy(struct cache_req_t *req) {
 
     }
 
+FINISH_SEND:
     //printf("total splice iterations %ld\n", cnt);
     //printf("bytes left: %ld\n", req->bytes_to_send);
 
@@ -304,36 +330,39 @@ int http_send_mmap(struct cache_req_t *req) {
     return req->bytes_to_send;
 }
 
+int serve_req(struct cache_req_t *req) {
+    if (req->file->mmap == NULL || req->file->mmap == (void *) -1) {
+        mk_info("mmap invalid, sending standard file");
+        return http_send_file(req);
+    }
+
+    return http_send_mmap_zcpy(req);
+}
 int _mkp_event_write(int fd) {
     struct cache_req_t *req = cache_reqs_get(fd);
     if (!req) {
         //mk_info("write event, but not of our request");
         return MK_PLUGIN_RET_EVENT_NEXT;
     }
+    //printf("handling write event for our request!\n");
     if (req->bytes_to_send <= 0) {
         mk_info("no data to send, returning event_write!");
         return MK_PLUGIN_RET_EVENT_CLOSE;
     }
-    int ret = 0;
-    if (req->file->mmap != NULL || req->file->mmap != (void *) -1) {
-        //mk_info("sending using mmap :)");
-        ret = http_send_mmap_zcpy(req);
-    }
-    else {
-        mk_info("mmap invalid, sending standard file");
-        ret = http_send_file(req);
-    }
+    int ret = serve_req(req);
 
     if (ret <= 0) {
 
-        //mk_api->http_request_end(fd);
-
-        return MK_PLUGIN_RET_EVENT_CLOSE;
-    }
-    else {
-        //printf("send some data, iterating event write again!\n");
+        cache_reqs_del(fd);
+        mk_api->http_request_end(fd);
+        //printf("dont with the request, ending it!\n");
 
         return MK_PLUGIN_RET_EVENT_OWNED;
+    }
+    else {
+        //printf("send some data, calling the stages again!\n");
+
+        return MK_PLUGIN_RET_EVENT_CONTINUE;
     }
 }
 
@@ -345,14 +374,22 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 
     //mk_info("running stage 30");
 
-    if (sr->file_info.size < 0 || sr->file_info.is_file == MK_FALSE || sr->file_info.read_access == MK_FALSE || sr->method != HTTP_METHOD_GET) {
-        //mk_info("not a file, passing on the file :)");
+    if (sr->file_info.size < 0 ||
+      sr->file_info.is_file == MK_FALSE ||
+      sr->file_info.read_access == MK_FALSE ||
+      sr->method != HTTP_METHOD_GET) {
+
+        mk_info("not a file, passing on the file :)");
         return MK_PLUGIN_RET_NOT_ME;
     }
 
-    // mk_info("cache plugin taking over the request :)");
 
-    struct cache_req_t *req = cache_reqs_new();
+    struct cache_req_t *req = cache_reqs_get(cs->socket);
+    if (req) {
+      //printf("got back an old request, continuing stage 30!\n");
+      return MK_PLUGIN_RET_CONTINUE;
+    }
+    req = cache_reqs_new();
     req->sr = sr;
     req->socket = cs->socket;
 
@@ -437,9 +474,12 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     mk_api->header_send(cs->socket, cs, sr);
 
 
-    if (_mkp_event_write(cs->socket) == MK_PLUGIN_RET_EVENT_CLOSE) {
-      mk_api->socket_cork_flag(req->socket, TCP_CORK_OFF);
-      return MK_PLUGIN_RET_END;
+    if (serve_req(req) <= 0) {
+        mk_api->socket_cork_flag(req->socket, TCP_CORK_OFF);
+        //printf("ending request early!\n");
+
+        cache_reqs_del(req->socket);
+        return MK_PLUGIN_RET_END;
     }
 
     mk_api->socket_cork_flag(req->socket, TCP_CORK_OFF);
@@ -448,36 +488,23 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 }
 
 
-void cleanup(int fd) {
-    struct cache_req_t *req = cache_reqs_get(fd);
-    if (!req) {
-      return;
-    }
-
-    if (req->fd_file >= 0)
-        close(req->fd_file);
-
-    cache_reqs_del(fd);
-
-
-}
 int _mkp_event_close(int socket)
 {
-  //mk_info("closing a socket");
+    //mk_info("closing a socket");
 
-  cleanup(socket);
-  return MK_PLUGIN_RET_EVENT_NEXT;
+    cache_reqs_del(socket);
+    return MK_PLUGIN_RET_EVENT_NEXT;
 }
 
 int _mkp_event_error(int socket)
 {
-  mk_info("got an error with a socket!");
-  cleanup(socket);
-	return MK_PLUGIN_RET_EVENT_NEXT;
+    mk_info("got an error with a socket!");
+    cache_reqs_del(socket);
+    return MK_PLUGIN_RET_EVENT_NEXT;
 }
 int _mkp_event_timeout(int socket)
 {
-  mk_info("got an error with a socket!");
-  cleanup(socket);
-	return MK_PLUGIN_RET_EVENT_NEXT;
+    mk_info("got an error with a socket!");
+    cache_reqs_del(socket);
+    return MK_PLUGIN_RET_EVENT_NEXT;
 }
