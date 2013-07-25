@@ -14,6 +14,7 @@
 
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
 
 #include <sys/mman.h>
 #define MMAP_SIZE sysconf(_SC_PAGE_SIZE)
@@ -105,10 +106,7 @@ struct cache_file_t {
   // list of pipe_buf_t
   struct mk_list cache;
 
-  // the offset after which the file data is stored
-  // (for adding aux data like headers)
-  long cache_offset;
-
+  struct pipe_buf_t cache_headers;
 };
 
 struct cache_req_t {
@@ -125,8 +123,6 @@ struct cache_req_t {
     // pipe buffer for the request
     struct pipe_buf_t buf;
 
-    // if the request is still alive (for reuse of cache_req_t)
-    int active;
     struct mk_list _head;
 };
 
@@ -523,8 +519,15 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
                 return MK_PLUGIN_RET_NOT_ME;
             }
 
-            // TODO: append http headers to file buffer
-            file->cache_offset = 0;
+            pipe_buf_init(&file->cache_headers);
+
+            mk_api->header_send(file->cache_headers.pipe[1], cs, sr);
+
+            if (ioctl(file->cache_headers.pipe[0], FIONREAD,
+                  &file->cache_headers.filled) != 0) {
+              perror("cannot find size of pipe buf!");
+              mk_bug(1);
+            }
 
             // file file buffer with empty pipes for now
             long len = file->st.st_size;
@@ -551,11 +554,25 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     req->curr = mk_list_entry_first(&file->cache,
         struct pipe_buf_t, _head);
 
+    mk_bug(req->buf.filled != 0);
+    mk_bug(file->cache_headers.filled == 0);
 
 
     sr->headers.content_type = mk_default_mime;
 
-    mk_api->header_send(cs->socket, cs, sr);
+    // send headerrs from cache
+    int ret = tee(file->cache_headers.pipe[0],
+        req->buf.pipe[1], file->cache_headers.filled, 0);
+    mk_bug(ret <= 0);
+
+    req->buf.filled += ret;
+
+    // TODO: currently a hack to make headers seem like file contents
+    req->bytes_offset -= ret;
+    req->bytes_to_send += ret;
+
+    // keep monkey plugin checks happy ;)
+    sr->headers.sent = MK_TRUE;
 
 
     if (serve_req(req) <= 0) {
