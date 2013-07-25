@@ -32,12 +32,11 @@ MONKEY_PLUGIN("cache",         /* shortname */
               VERSION,        /* version */
               MK_PLUGIN_CORE_PRCTX | MK_PLUGIN_CORE_THCTX |  MK_PLUGIN_STAGE_30); /* hooks */
 
-pthread_key_t cache_pipe;
 pthread_key_t cache_reqs;
 pthread_key_t pool_reqs;
 
 struct table_t *inode_table;
-pthread_rwlock_t table_rwlock = PTHREAD_RWLOCK_INITIALIZER;
+pthread_mutex_t table_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 int devnull;
 
@@ -68,17 +67,13 @@ void flushpipe(int *fds, int size) {
     }
     mk_bug(res != size);
 }
-void cache_pipe_init() {
-  devnull = open("/dev/null", O_WRONLY);
-  int *fds = calloc(sizeof(int), 2);
-  createpipe(fds);
-  pthread_setspecific(cache_pipe, fds);
-}
 
 struct pipe_buf_t {
   int pipe[2];
   int filled;     // amount of data filled in pipe
   int cap;        // tatal buffer size of pipe (should block afterwards)
+
+  pthread_mutex_t write_mutex; // write access to the buffer
 
   struct mk_list _head;
 };
@@ -86,6 +81,16 @@ struct pipe_buf_t {
 void pipe_buf_free(struct pipe_buf_t *buf) {
     closepipe(buf->pipe);
 }
+
+struct pipe_buf_t * pipe_buf_init(struct pipe_buf_t *buf) {
+    buf->filled = 0;
+    buf->cap = createpipe(buf->pipe);
+
+    pthread_mutex_init(&buf->write_mutex, NULL);
+
+    return buf;
+}
+
 
 
 struct cache_file_t {
@@ -155,8 +160,7 @@ struct cache_req_t * cache_reqs_new() {
     }
     else {
         req = malloc(sizeof(struct cache_req_t));
-        req->buf.cap = createpipe(req->buf.pipe);
-        req->buf.filled = 0;
+        pipe_buf_init(&req->buf);
     }
 
 
@@ -223,10 +227,10 @@ int _mkp_core_prctx(struct server_config *config) {
     (void) config;
 
     mk_info("cache: a new process ctx!!");
+    devnull = open("/dev/null", O_WRONLY);
 
     pthread_key_create(&cache_reqs, NULL);
     pthread_key_create(&pool_reqs, NULL);
-    pthread_key_create(&cache_pipe, NULL);
 
     inode_table = table_alloc();
 
@@ -236,7 +240,6 @@ void _mkp_core_thctx() {
     mk_info("cache: a new thread ctx!!");
 
     cache_reqs_init();
-    cache_pipe_init();
     pool_reqs_init();
 }
 
@@ -273,12 +276,12 @@ int http_send_mmap_zcpy(struct cache_req_t *req) {
         struct pipe_buf_t *curr = req->curr;
         // fill in buf pipe with req data
         if (curr) {
-            // offset of the file till the end of filled cache
-            long off = req->bytes_offset + req->buf.filled +
-              req->curr->filled;
+            // offset of the file before the start of filled cache
+            long off = req->bytes_offset + req->buf.filled;
 
-            // amount of data that can be filled from file to cache
-            long len = curr->cap - curr->filled;
+            // total amount of data that can be filled from file to cache
+            long len = curr->cap;
+
             if (off + len > file->st.st_size) {
                 //  this should be the last portion of file
                 len = file->st.st_size - off;
@@ -293,38 +296,44 @@ int http_send_mmap_zcpy(struct cache_req_t *req) {
             mk_bug(off > file->st.st_size);
             mk_bug(len < 0);
 
-            if (len > 0) {
-                struct iovec tmp = {
-                  .iov_base = file->mmap + off,
-                  .iov_len = len
-                };
+            if (curr->filled < len) {
+                pthread_mutex_lock(&curr->write_mutex);
+                while (curr->filled < len) {
+                    struct iovec tmp = {
+                      .iov_base = file->mmap + off + curr->filled,
+                      .iov_len = len - curr->filled
+                    };
 
-                pbytes = vmsplice(curr->pipe[1], &tmp, 1,
-                    SPLICE_F_NONBLOCK | SPLICE_F_GIFT);
+                    pbytes = vmsplice(curr->pipe[1], &tmp, 1,
+                        SPLICE_F_NONBLOCK | SPLICE_F_GIFT);
 
-                if (pbytes < 0) {
-                    if (errno == EAGAIN) {
-                        // opened file is blocking, carry on sending data
-                        // to the socket
-                        goto SEND_BUFFER;
+                    if (pbytes < 0) {
+                        if (errno == EAGAIN) {
+                            // opened file is blocking, exit out
+                            printf("would block reading data into cache, "
+                                "trying in next cycle!\n");
+                            break;
+                        }
+
+                        perror(
+                          "cannot vmsplice data form file cache to the "
+                          "pipe buffer!\n");
+
+                        printf("Tried to write from %ld (out of %ld) till "
+                            "%ld\n", off, file->st.st_size, off + len);
+                        break;
                     }
+                    // printf("filled %ld into file cache!\n", pbytes);
 
-                    perror(
-                      "cannot vmsplice data form file cache to the "
-                      "pipe buffer!\n");
+                    curr->filled += pbytes;
 
-                    printf("Tried to write from %ld (out of %ld) till "
-                        "%ld\n", off, file->st.st_size, off + len);
-                    return -1;
                 }
-                // printf("filled %ld into file cache!\n", pbytes);
-
-                curr->filled += pbytes;
-                len -= pbytes;
+                pthread_mutex_unlock(&curr->write_mutex);
             }
 
+            mk_bug(curr->filled > len);
             // if buffer is empty and cache is all set, fill it with the cache
-            if (len == 0 && !req->buf.filled) {
+            if (curr->filled == len && !req->buf.filled) {
                 // fill curr into buf
                 pbytes = tee(curr->pipe[0], req->buf.pipe[1],
                     curr->filled, SPLICE_F_NONBLOCK);
@@ -485,24 +494,10 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     //    sr->real_path.data, st.st_ino);
 
     //printf("headers:\n%s\n", sr->uri_processed.data);
-    int cnt = 0;
-    while (1) {
-      int rc = pthread_rwlock_tryrdlock(&table_rwlock);
-      if (rc == EBUSY) {
-        if (cnt > 10) {
-          printf("tried locking too many times, giving up!");
-          return MK_PLUGIN_RET_NOT_ME;
-        }
-
-        printf("could not get lock, trying again!\n");
-        cnt++;
-      }
-      else break;
-    }
+    //
     struct cache_file_t *file = table_get(inode_table, st.st_ino);
-    pthread_rwlock_unlock(&table_rwlock);
     if (!file) {
-        pthread_rwlock_wrlock(&table_rwlock);
+        pthread_mutex_lock(&table_mutex);
         // another check in case its been already added
         file = table_get(inode_table, st.st_ino);
 
@@ -536,8 +531,8 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
             struct pipe_buf_t *tmp;
             while (len > 0) {
                 tmp  = malloc(sizeof(struct pipe_buf_t));
-                tmp->filled = 0;
-                tmp->cap = createpipe(tmp->pipe);
+                pipe_buf_init(tmp);
+
                 mk_list_add(&tmp->_head, &file->cache);
 
                 len -= tmp->cap;
@@ -545,7 +540,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 
             table_add(inode_table, st.st_ino, file);
         }
-        pthread_rwlock_unlock(&table_rwlock);
+        pthread_mutex_unlock(&table_mutex);
     }
     else {
         //printf("got file with inode: %ld\n", file->st.st_ino);
