@@ -42,22 +42,21 @@ pthread_mutex_t table_mutex = PTHREAD_MUTEX_INITIALIZER;
 int devnull;
 
 int createpipe(int *fds) {
-  int size = 128 * 1024;
-  if (pipe2(fds, O_NONBLOCK | O_CLOEXEC) < 0) {
-      perror("cannot create a pipe!");
-      return 0;
-  }
+    int size = 128 * 1024;
+    if (pipe2(fds, O_NONBLOCK | O_CLOEXEC) < 0) {
+        perror("cannot create a pipe!");
+        return 0;
+    }
 
-  // optimisation on linux, increase pipe size
-  fcntl(fds[1], F_SETPIPE_SZ, size);
+    // optimisation on linux, increase pipe size
+    fcntl(fds[1], F_SETPIPE_SZ, size);
 
-  return size;
-
+    return size;
 }
 
 void closepipe(int *fds) {
-  close(fds[0]);
-  close(fds[1]);
+    close(fds[0]);
+    close(fds[1]);
 }
 
 void flushpipe(int *fds, int size) {
@@ -70,13 +69,13 @@ void flushpipe(int *fds, int size) {
 }
 
 struct pipe_buf_t {
-  int pipe[2];
-  int filled;     // amount of data filled in pipe
-  int cap;        // tatal buffer size of pipe (should block afterwards)
+    int pipe[2];
+    int filled;     // amount of data filled in pipe
+    int cap;        // tatal buffer size of pipe (should block afterwards)
 
-  pthread_mutex_t write_mutex; // write access to the buffer
+    pthread_mutex_t write_mutex; // write access to the buffer
 
-  struct mk_list _head;
+    struct mk_list _head;
 };
 
 void pipe_buf_free(struct pipe_buf_t *buf) {
@@ -95,22 +94,22 @@ struct pipe_buf_t * pipe_buf_init(struct pipe_buf_t *buf) {
 
 
 struct cache_file_t {
-  // open fd of the file
-  int fd;
+    // open fd of the file
+    int fd;
 
-  void *mmap;
-  int mmap_len;
+    void *mmap;
+    int mmap_len;
 
-  struct stat st;
+    struct stat st;
 
-  // list of pipe_buf_t
-  struct mk_list cache;
+    // list of pipe_buf_t
+    struct mk_list cache;
 
-  // cached headers, along with some duplicate file content from cache
-  // header len is the length of the headers in the pipe
-  struct pipe_buf_t cache_headers;
-  // length of the headers, rest is file contents
-  long header_len;
+    // cached headers, along with some duplicate file content from cache
+    // header len is the length of the headers in the pipe
+    struct pipe_buf_t cache_headers;
+    // length of the headers, rest is file contents
+    long header_len;
 };
 
 struct cache_req_t {
@@ -273,6 +272,8 @@ int mem_to_pipe(void *mem, struct pipe_buf_t *dest, int off, int len) {
       .iov_len = len
     };
 
+    mk_bug(len < 0);
+
     while (cnt < len) {
 
         int ret = vmsplice(dest->pipe[1], &tmp, 1,
@@ -334,7 +335,7 @@ int fill_req_curr(struct cache_req_t *req) {
         }
     }
 
-    mk_bug(curr->filled > len);
+    // mk_bug(curr->filled > len);
 
     return len - curr->filled;
 }
@@ -343,11 +344,11 @@ int http_send_mmap_zcpy(struct cache_req_t *req) {
     struct cache_file_t *file = req->file;
     long pbytes;
 
-
-    // loop until the current file pointer is a the end
-    // or tmp buffer still has data
+    // loop until the current file pointer is a the end or tmp buffer
+    // still has data
     while (req->bytes_to_send > 0 && (req->curr || req->buf.filled)) {
         // until range requests are not supported, this is a bug
+        fflush(stdout);
         mk_bug(req->bytes_offset + req->bytes_to_send != file->st.st_size);
 
         // fill in buf pipe with req data
@@ -373,8 +374,6 @@ int http_send_mmap_zcpy(struct cache_req_t *req) {
 
 
             req->buf.filled += pbytes;
-
-
 
             if (&file->cache == req->curr->_head.next) {
                 // reached the start so finished with file buffers
@@ -569,10 +568,12 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     req->curr = mk_list_entry_first(&file->cache,
         struct pipe_buf_t, _head);
 
+    // early fill of file request in caes it is not served
+    fill_req_curr(req);
+
     mk_bug(req->buf.filled != 0);
 
     sr->headers.content_type = mk_default_mime;
-
 
     int ret = 0;
     if (!file->cache_headers.filled) {
@@ -604,11 +605,13 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 
             file->cache_headers.filled = file->header_len;
             // fill in the empty header pipe space with some initial file
-            // data to send them in a single tee syscall
+            // data to send them in a single tee syscall, only in case
+            // there is enough room which would be true for small files
+            // which fit inside a pipe
             int leftover =
               file->cache_headers.cap - file->cache_headers.filled;
 
-            if (leftover > 0) {
+            if (leftover > req->curr->filled) {
                if (req->curr->filled) {
                   ret = tee(req->curr->pipe[0],
                     file->cache_headers.pipe[1], leftover,
@@ -617,16 +620,10 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
                   mk_bug(ret <= 0);
 
                   file->cache_headers.filled += ret;
-                  printf("filled in cache header with file contents!!\n");
-               }
-               else {
-                  printf("file cache not filled, cant fill in header "
-                      "with file!\n");
                }
             }
             else {
-                printf("no space left in header pipe to fill with "
-                    "file!\n");
+                // file too big to fit in the header pipe
             }
             mk_bug(file->cache_headers.filled == 0);
         }
@@ -636,6 +633,11 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     // send headers from cache
     ret = tee(file->cache_headers.pipe[0],
         req->buf.pipe[1], file->cache_headers.filled, SPLICE_F_NONBLOCK);
+
+    if (ret < 0) {
+        perror("cannot tee into the request buffer!!\n");
+        mk_bug(1);
+    }
     mk_bug(ret < file->header_len);
 
     req->buf.filled += ret;
@@ -643,6 +645,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     // HACK: make headers seem like file contents
     req->bytes_offset -= file->header_len;
     req->bytes_to_send += file->header_len;
+
 
     // keep monkey plugin checks happy ;)
     sr->headers.sent = MK_TRUE;
