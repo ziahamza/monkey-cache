@@ -555,17 +555,30 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     if (!file->cache_headers.filled) {
         pthread_mutex_lock(&file->cache_headers.write_mutex);
         if (!file->cache_headers.filled) {
-            printf("cacheing http headers!!\n");
-            sr->headers.connection = -1;
+
+            // HACK: change server request values to prevent monkey to
+            // not add connection: close in any case, it messes up with
+            // the cached headers.
+            int old_conn = sr->headers.connection = 0,
+                old_keepalive = sr->keep_alive = MK_TRUE,
+                old_close = sr->close_now = MK_FALSE,
+                old_conlen = sr->connection.len;
+            if (sr->connection.len == 0) sr->connection.len = 1;
+
             mk_api->header_send(file->cache_headers.pipe[1], cs, sr);
-            mk_api->header_send(1, cs, sr);
 
             if (ioctl(file->cache_headers.pipe[0], FIONREAD,
                   &file->cache_headers.filled) != 0) {
-              perror("cannot find size of pipe buf!");
-              mk_bug(1);
+                perror("cannot find size of pipe buf!");
+                mk_bug(1);
             }
-            printf("cached http headers!!\n");
+
+            // restoring modified server request values
+            sr->headers.connection = old_conn;
+            sr->keep_alive = old_keepalive;
+            sr->close_now = old_close;
+            sr->connection.len = old_conlen;
+
             mk_bug(file->cache_headers.filled == 0);
         }
         pthread_mutex_unlock(&file->cache_headers.write_mutex);
@@ -578,7 +591,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 
     req->buf.filled += ret;
 
-    // TODO: currently a hack to make headers seem like file contents
+    // HACK: make headers seem like file contents
     req->bytes_offset -= ret;
     req->bytes_to_send += ret;
 
