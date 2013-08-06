@@ -521,13 +521,6 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 
             pipe_buf_init(&file->cache_headers);
 
-            mk_api->header_send(file->cache_headers.pipe[1], cs, sr);
-
-            if (ioctl(file->cache_headers.pipe[0], FIONREAD,
-                  &file->cache_headers.filled) != 0) {
-              perror("cannot find size of pipe buf!");
-              mk_bug(1);
-            }
 
             // file file buffer with empty pipes for now
             long len = file->st.st_size;
@@ -555,12 +548,30 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
         struct pipe_buf_t, _head);
 
     mk_bug(req->buf.filled != 0);
-    mk_bug(file->cache_headers.filled == 0);
-
 
     sr->headers.content_type = mk_default_mime;
 
-    // send headerrs from cache
+
+    if (!file->cache_headers.filled) {
+        pthread_mutex_lock(&file->cache_headers.write_mutex);
+        if (!file->cache_headers.filled) {
+            printf("cacheing http headers!!\n");
+            sr->headers.connection = -1;
+            mk_api->header_send(file->cache_headers.pipe[1], cs, sr);
+            mk_api->header_send(1, cs, sr);
+
+            if (ioctl(file->cache_headers.pipe[0], FIONREAD,
+                  &file->cache_headers.filled) != 0) {
+              perror("cannot find size of pipe buf!");
+              mk_bug(1);
+            }
+            printf("cached http headers!!\n");
+            mk_bug(file->cache_headers.filled == 0);
+        }
+        pthread_mutex_unlock(&file->cache_headers.write_mutex);
+    }
+
+    // send headers from cache
     int ret = tee(file->cache_headers.pipe[0],
         req->buf.pipe[1], file->cache_headers.filled, 0);
     mk_bug(ret <= 0);
@@ -573,7 +584,6 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 
     // keep monkey plugin checks happy ;)
     sr->headers.sent = MK_TRUE;
-
 
     if (serve_req(req) <= 0) {
         mk_api->socket_cork_flag(req->socket, TCP_CORK_OFF);
