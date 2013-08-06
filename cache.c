@@ -106,7 +106,11 @@ struct cache_file_t {
   // list of pipe_buf_t
   struct mk_list cache;
 
+  // cached headers, along with some duplicate file content from cache
+  // header len is the length of the headers in the pipe
   struct pipe_buf_t cache_headers;
+  // length of the headers, rest is file contents
+  long header_len;
 };
 
 struct cache_req_t {
@@ -257,6 +261,83 @@ int http_send_file(struct cache_req_t *req)
     return req->bytes_to_send;
 }
 
+int mem_to_pipe(void *mem, struct pipe_buf_t *dest, int off, int len) {
+    int cnt = 0;
+    pthread_mutex_lock(&dest->write_mutex);
+    if (dest->cap - dest->filled  < len) {
+        mk_bug("destination pipe doesnt have enough space!");
+    }
+
+    struct iovec tmp = {
+      .iov_base = mem + off,
+      .iov_len = len
+    };
+
+    while (cnt < len) {
+
+        int ret = vmsplice(dest->pipe[1], &tmp, 1,
+            SPLICE_F_NONBLOCK | SPLICE_F_GIFT);
+
+        if (ret < 0) {
+            if (errno == EAGAIN) {
+                // opened file is blocking, exit out
+                return cnt;
+            }
+
+            perror(
+              "cannot vmsplice data form file cache to the "
+              "pipe buffer!\n");
+
+            return ret;
+        }
+        dest->filled += ret;
+        cnt += ret;
+    }
+
+    pthread_mutex_unlock(&dest->write_mutex);
+    return cnt;
+}
+
+// fill the current file cache pointer of a request
+int fill_req_curr(struct cache_req_t *req) {
+    struct pipe_buf_t *curr = req->curr;
+    struct cache_file_t *file = req->file;
+
+    // offset of the file before the start of filled cache
+    long off = req->bytes_offset + req->buf.filled;
+
+    // total amount of data that can be filled from file to cache
+    long len = curr->cap;
+
+    if (off + len > file->st.st_size) {
+        //  this should be the last portion of file
+        len = file->st.st_size - off;
+        /*
+        if (len > 0)
+            printf("hopefully the last portion of file "
+                "(namely %ld bytes) can be filled!\n",
+                len);
+        */
+    }
+
+    mk_bug(off > file->st.st_size);
+    mk_bug(len < 0);
+
+    if (curr->filled == len) return 0;
+
+    if (curr->filled < len) {
+
+        if (mem_to_pipe(file->mmap, curr, off + curr->filled, len - curr->filled) < 0) {
+
+            printf("Tried to write from %ld (out of %ld) till "
+                "%ld\n", off, file->st.st_size, off + len);
+        }
+    }
+
+    mk_bug(curr->filled > len);
+
+    return len - curr->filled;
+}
 
 int http_send_mmap_zcpy(struct cache_req_t *req) {
     struct cache_file_t *file = req->file;
@@ -269,103 +350,44 @@ int http_send_mmap_zcpy(struct cache_req_t *req) {
         // until range requests are not supported, this is a bug
         mk_bug(req->bytes_offset + req->bytes_to_send != file->st.st_size);
 
-        struct pipe_buf_t *curr = req->curr;
         // fill in buf pipe with req data
-        if (curr) {
-            // offset of the file before the start of filled cache
-            long off = req->bytes_offset + req->buf.filled;
+        // if buffer is empty and cache is all set, fill it with the cache
+        if (req->curr && fill_req_curr(req) == 0 && !req->buf.filled) {
+            // fill curr into buf
+            pbytes = tee(req->curr->pipe[0], req->buf.pipe[1],
+                req->curr->filled, SPLICE_F_NONBLOCK);
 
-            // total amount of data that can be filled from file to cache
-            long len = curr->cap;
-
-            if (off + len > file->st.st_size) {
-                //  this should be the last portion of file
-                len = file->st.st_size - off;
-                /*
-                if (len > 0)
-                    printf("hopefully the last portion of file "
-                        "(namely %ld bytes) can be filled!\n",
-                        len);
-                */
-            }
-
-            mk_bug(off > file->st.st_size);
-            mk_bug(len < 0);
-
-            if (curr->filled < len) {
-                pthread_mutex_lock(&curr->write_mutex);
-                while (curr->filled < len) {
-                    struct iovec tmp = {
-                      .iov_base = file->mmap + off + curr->filled,
-                      .iov_len = len - curr->filled
-                    };
-
-                    pbytes = vmsplice(curr->pipe[1], &tmp, 1,
-                        SPLICE_F_NONBLOCK | SPLICE_F_GIFT);
-
-                    if (pbytes < 0) {
-                        if (errno == EAGAIN) {
-                            // opened file is blocking, exit out
-                            printf("would block reading data into cache, "
-                                "trying in next cycle!\n");
-                            break;
-                        }
-
-                        perror(
-                          "cannot vmsplice data form file cache to the "
-                          "pipe buffer!\n");
-
-                        printf("Tried to write from %ld (out of %ld) till "
-                            "%ld\n", off, file->st.st_size, off + len);
-                        break;
-                    }
-                    // printf("filled %ld into file cache!\n", pbytes);
-
-                    curr->filled += pbytes;
-
-                }
-                pthread_mutex_unlock(&curr->write_mutex);
-            }
-
-            mk_bug(curr->filled > len);
-            // if buffer is empty and cache is all set, fill it with the cache
-            if (curr->filled == len && !req->buf.filled) {
-                // fill curr into buf
-                pbytes = tee(curr->pipe[0], req->buf.pipe[1],
-                    curr->filled, SPLICE_F_NONBLOCK);
-
-                if (pbytes < 0) {
-                    if (errno == EAGAIN) {
-                        mk_info("Pretty strange, blocking in tee?!");
-                        goto SEND_BUFFER;
-                    }
-                    else {
-                        perror("Cannot tee into tmp buf!!\n");
-                        return -1;
-                    }
-                }
-
-                // printf("filled %ld from file cache to req buffer!\n",
-                //    pbytes);
-
-
-                req->buf.filled += pbytes;
-
-
-
-                if (&file->cache == curr->_head.next) {
-                    // reached the start so finished with file buffers
-
-                    // printf("cache finished, only buffer needs to be "
-                    //    "flushed (%d bytes)!\n", req->buf.filled);
-                    req->curr = curr = NULL;
+            if (pbytes < 0) {
+                if (errno == EAGAIN) {
+                    mk_info("Pretty strange, blocking in tee?!");
+                    goto SEND_BUFFER;
                 }
                 else {
-                  req->curr = curr = mk_list_entry_next(&curr->_head,
-                      struct pipe_buf_t, _head, &file->cache);
+                    perror("Cannot tee into tmp buf!!\n");
+                    return -1;
                 }
-
             }
+
+            // printf("filled %ld from file cache to req buffer!\n",
+            //    pbytes);
+
+
+            req->buf.filled += pbytes;
+
+
+
+            if (&file->cache == req->curr->_head.next) {
+                // reached the start so finished with file buffers
+
+                // printf("cache finished, only buffer needs to be "
+                //    "flushed (%d bytes)!\n", req->buf.filled);
+                req->curr =  NULL;
+            }
+            else {
+              req->curr = mk_list_entry_next(&req->curr->_head,
+                  struct pipe_buf_t, _head, &file->cache);
+            }
+
         }
 
 SEND_BUFFER:
@@ -552,6 +574,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     sr->headers.content_type = mk_default_mime;
 
 
+    int ret = 0;
     if (!file->cache_headers.filled) {
         pthread_mutex_lock(&file->cache_headers.write_mutex);
         if (!file->cache_headers.filled) {
@@ -568,7 +591,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
             mk_api->header_send(file->cache_headers.pipe[1], cs, sr);
 
             if (ioctl(file->cache_headers.pipe[0], FIONREAD,
-                  &file->cache_headers.filled) != 0) {
+                  &file->header_len) != 0) {
                 perror("cannot find size of pipe buf!");
                 mk_bug(1);
             }
@@ -579,26 +602,53 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
             sr->close_now = old_close;
             sr->connection.len = old_conlen;
 
+            file->cache_headers.filled = file->header_len;
+            // fill in the empty header pipe space with some initial file
+            // data to send them in a single tee syscall
+            int leftover =
+              file->cache_headers.cap - file->cache_headers.filled;
+
+            if (leftover > 0) {
+               if (req->curr->filled) {
+                  ret = tee(req->curr->pipe[0],
+                    file->cache_headers.pipe[1], leftover,
+                    SPLICE_F_NONBLOCK);
+
+                  mk_bug(ret <= 0);
+
+                  file->cache_headers.filled += ret;
+                  printf("filled in cache header with file contents!!\n");
+               }
+               else {
+                  printf("file cache not filled, cant fill in header "
+                      "with file!\n");
+               }
+            }
+            else {
+                printf("no space left in header pipe to fill with "
+                    "file!\n");
+            }
             mk_bug(file->cache_headers.filled == 0);
         }
         pthread_mutex_unlock(&file->cache_headers.write_mutex);
     }
 
     // send headers from cache
-    int ret = tee(file->cache_headers.pipe[0],
-        req->buf.pipe[1], file->cache_headers.filled, 0);
-    mk_bug(ret <= 0);
+    ret = tee(file->cache_headers.pipe[0],
+        req->buf.pipe[1], file->cache_headers.filled, SPLICE_F_NONBLOCK);
+    mk_bug(ret < file->header_len);
 
     req->buf.filled += ret;
 
     // HACK: make headers seem like file contents
-    req->bytes_offset -= ret;
-    req->bytes_to_send += ret;
+    req->bytes_offset -= file->header_len;
+    req->bytes_to_send += file->header_len;
 
     // keep monkey plugin checks happy ;)
     sr->headers.sent = MK_TRUE;
 
     if (serve_req(req) <= 0) {
+
         mk_api->socket_cork_flag(req->socket, TCP_CORK_OFF);
         //printf("ending request early!\n");
 
