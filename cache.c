@@ -479,18 +479,38 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
 
       mk_api->header_set_http_status(sr, MK_HTTP_OK);
 
-      cJSON *root, *mem;
+      cJSON *root, *mem, *files, *file;
       char *out;
 
       root = cJSON_CreateObject();
       cJSON_AddItemToObject(root, "version", cJSON_CreateString("alpha"));
       cJSON_AddItemToObject(root, "memory", mem = cJSON_CreateObject());
+      cJSON_AddItemToObject(root, "files", files = cJSON_CreateArray());
       cJSON_AddNumberToObject(mem,"pipe_size", pipe_size);
       cJSON_AddNumberToObject(mem,"pipe_total_memory", pipe_totalmem);
 
+      int i;
+      struct node_t *node;
+      struct cache_file_t *f;
+      for (i = 0; i < inode_table->size; i++) {
+        struct node_t *next;
+        for (
+          node = inode_table->store[i];
+          node != NULL;
+          node = next
+        ) {
+          next = node->next;
+          f = node->val;
+
+          cJSON_AddItemToArray(files, file = cJSON_CreateObject());
+          cJSON_AddNumberToObject(file, "inode", node->key);
+          cJSON_AddNumberToObject(file, "size", f->st.st_size);
+
+        }
+      }
+
       out = cJSON_Print(root);
 
-      printf("%s\n",out);
 
       sr->headers.content_length = strlen(out);
 
@@ -498,7 +518,7 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
 
       mk_api->socket_send(cs->socket, out, strlen(out));
 
-      printf("got a call for the api!\n");
+      // printf("got a call for the api!\n");
 
       cJSON_Delete(root);
       free(out);

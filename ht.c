@@ -1,20 +1,8 @@
 #include <stdlib.h>
 #include  <stdint.h>
+#include "ht.h"
 
 #define HT_MIN_SIZE 8192
-
-struct node_t {
-  ino_t key;
-  void *val;
-
-  struct node_t *next;
-};
-
-
-struct table_t {
-  struct node_t **store;
-  int size;
-};
 
 size_t key_hash(ino_t key, size_t max) {
   return ((uint32_t) key * 2654435761U) % max;
