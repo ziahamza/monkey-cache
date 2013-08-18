@@ -28,6 +28,8 @@
 #include "ht.h"
 #include "utils.h"
 
+#include "cJSON.h"
+
 MONKEY_PLUGIN("cache",         /* shortname */
               "Monkey Cache", /* name */
               VERSION,        /* version */
@@ -40,23 +42,33 @@ struct table_t *inode_table;
 pthread_mutex_t table_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 int devnull;
+// size of a single pipe
+int pipe_size = 128 * 1024;
+// total memory reserved by the plugin in form of pipes
+int pipe_totalmem = 0;
 
 int createpipe(int *fds) {
-    int size = 128 * 1024;
     if (pipe2(fds, O_NONBLOCK | O_CLOEXEC) < 0) {
         perror("cannot create a pipe!");
         return 0;
     }
 
     // optimisation on linux, increase pipe size
-    fcntl(fds[1], F_SETPIPE_SZ, size);
+    if (fcntl(fds[1], F_SETPIPE_SZ, pipe_size) < 0) {
+        perror("changing pipe size");
+        mk_bug(1);
+    }
 
-    return size;
+    pipe_totalmem += pipe_size;
+
+    return pipe_size;
 }
 
 void closepipe(int *fds) {
     close(fds[0]);
     close(fds[1]);
+
+    pipe_totalmem -= pipe_size;
 }
 
 void flushpipe(int *fds, int size) {
@@ -90,8 +102,6 @@ struct pipe_buf_t * pipe_buf_init(struct pipe_buf_t *buf) {
 
     return buf;
 }
-
-
 
 struct cache_file_t {
     // open fd of the file
@@ -144,8 +154,8 @@ void pool_reqs_init() {
 
 
 struct cache_req_t * cache_reqs_new() {
-    struct mk_list *pool = pthread_getspecific(pool_reqs);
-    struct cache_req_t *req;
+  struct mk_list *pool = pthread_getspecific(pool_reqs);
+  struct cache_req_t *req;
 
     if (mk_list_is_empty(pool) == -1) {
         // printf("reusing an exhisting request!\n");
@@ -464,6 +474,38 @@ int _mkp_event_write(int fd) {
     }
 }
 
+int serve_stats(struct client_session *cs, struct session_request *sr)
+{
+
+      mk_api->header_set_http_status(sr, MK_HTTP_OK);
+
+      cJSON *root, *mem;
+      char *out;
+
+      root = cJSON_CreateObject();
+      cJSON_AddItemToObject(root, "version", cJSON_CreateString("alpha"));
+      cJSON_AddItemToObject(root, "memory", mem = cJSON_CreateObject());
+      cJSON_AddNumberToObject(mem,"pipe_size", pipe_size);
+      cJSON_AddNumberToObject(mem,"pipe_total_memory", pipe_totalmem);
+
+      out = cJSON_Print(root);
+
+      printf("%s\n",out);
+
+      sr->headers.content_length = strlen(out);
+
+      mk_api->header_send(cs->socket, cs, sr);
+
+      mk_api->socket_send(cs->socket, out, strlen(out));
+
+      printf("got a call for the api!\n");
+
+      cJSON_Delete(root);
+      free(out);
+      return MK_PLUGIN_RET_END;
+
+}
+
 int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
                   struct session_request *sr)
 {
@@ -472,17 +514,25 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 
     //mk_info("running stage 30");
 
+    char path[1024];
+    memcpy(path, sr->uri_processed.data, sr->uri_processed.len);
+    path[sr->uri_processed.len] = '\0';
+    printf("path: %s\n", path);
+    if (strcmp(path, "/monkey-cache/stats") == 0) {
+      return serve_stats(cs, sr);
+    }
+
     if (sr->file_info.size < 0 ||
       sr->file_info.is_file == MK_FALSE ||
       sr->file_info.read_access == MK_FALSE ||
       sr->method != HTTP_METHOD_GET) {
 
-        mk_info("not a file, passing on the file :)");
-        return MK_PLUGIN_RET_NOT_ME;
+      mk_info("not a file, passing on the file :)");
+      return MK_PLUGIN_RET_NOT_ME;
     }
 
-
     struct cache_req_t *req = cache_reqs_get(cs->socket);
+
     if (req) {
       //printf("got back an old request, continuing stage 30!\n");
       return MK_PLUGIN_RET_CONTINUE;
@@ -638,6 +688,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
         perror("cannot tee into the request buffer!!\n");
         mk_bug(1);
     }
+
     mk_bug(ret < file->header_len);
 
     req->buf.filled += ret;
