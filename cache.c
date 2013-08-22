@@ -1,4 +1,4 @@
-/* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set tabstop=4 shiftwidth=4 expandtab: */
 
 #include <stdio.h>
 #include <string.h>
@@ -182,37 +182,37 @@ struct cache_req_t * cache_reqs_new() {
 }
 
 struct cache_req_t * cache_reqs_get(int socket) {
-  struct mk_list *reqs = pthread_getspecific(cache_reqs);
-  struct mk_list *curr;
+    struct mk_list *reqs = pthread_getspecific(cache_reqs);
+    struct mk_list *curr;
 
-  mk_list_foreach(curr, reqs) {
-    struct cache_req_t *req = mk_list_entry(curr, struct cache_req_t, _head);
-    if (req->socket == socket) {
-      return req;
+    mk_list_foreach(curr, reqs) {
+        struct cache_req_t *req = mk_list_entry(curr, struct cache_req_t, _head);
+        if (req->socket == socket) {
+            return req;
+        }
     }
-  }
 
-  return NULL;
+    return NULL;
 }
 
 void cache_reqs_del(int socket) {
-  struct mk_list *reqs = pthread_getspecific(cache_reqs);
-  struct mk_list *curr, *next;
+    struct mk_list *reqs = pthread_getspecific(cache_reqs);
+    struct mk_list *curr, *next;
 
-  mk_list_foreach_safe(curr, next, reqs) {
-    struct cache_req_t *req = mk_list_entry(curr, struct cache_req_t, _head);
-    if (req->socket == socket) {
-      //mk_info("removing a requet!");
-      mk_list_del(&req->_head);
+    mk_list_foreach_safe(curr, next, reqs) {
+        struct cache_req_t *req = mk_list_entry(curr, struct cache_req_t, _head);
+        if (req->socket == socket) {
+            //mk_info("removing a requet!");
+            mk_list_del(&req->_head);
 
-      // reuse the request as pipe creation can be expensive
-      mk_list_add(&req->_head, pthread_getspecific(pool_reqs));
+            // reuse the request as pipe creation can be expensive
+            mk_list_add(&req->_head, pthread_getspecific(pool_reqs));
 
-      // pipe_buf_free(&req->buf);
-      // free(req);
-      return;
-    };
-  }
+            // pipe_buf_free(&req->buf);
+            // free(req);
+            return;
+        };
+    }
 
 }
 
@@ -262,9 +262,9 @@ int http_send_file(struct cache_req_t *req)
     }
 
     if (nbytes < 0) {
-      perror("cannto send file!");
+        perror("cannto send file!");
 
-      return -1;
+        return -1;
     }
 
     return req->bytes_to_send;
@@ -278,8 +278,8 @@ int mem_to_pipe(void *mem, struct pipe_buf_t *dest, int off, int len) {
     }
 
     struct iovec tmp = {
-      .iov_base = mem + off,
-      .iov_len = len
+        .iov_base = mem + off,
+        .iov_len = len
     };
 
     mk_bug(len < 0);
@@ -393,7 +393,7 @@ int http_send_mmap_zcpy(struct cache_req_t *req) {
                 req->curr =  NULL;
             }
             else {
-              req->curr = mk_list_entry_next(&req->curr->_head,
+                req->curr = mk_list_entry_next(&req->curr->_head,
                   struct pipe_buf_t, _head, &file->cache);
             }
 
@@ -401,9 +401,9 @@ int http_send_mmap_zcpy(struct cache_req_t *req) {
 
 SEND_BUFFER:
         if (!req->buf.filled) {
-           // nothing to do, just get out of the loop
-           // mk_info("surprisingly no data to send over to the socket!\n");
-           break;
+            // nothing to do, just get out of the loop
+            // mk_info("surprisingly no data to send over to the socket!\n");
+            break;
         }
 
         // finally splicing data to the socket
@@ -477,52 +477,52 @@ int _mkp_event_write(int fd) {
 int serve_stats(struct client_session *cs, struct session_request *sr)
 {
 
-      mk_api->header_set_http_status(sr, MK_HTTP_OK);
+    mk_api->header_set_http_status(sr, MK_HTTP_OK);
 
-      cJSON *root, *mem, *files, *file;
-      char *out;
+    cJSON *root, *mem, *files, *file;
+    char *out;
 
-      root = cJSON_CreateObject();
-      cJSON_AddItemToObject(root, "version", cJSON_CreateString("alpha"));
-      cJSON_AddItemToObject(root, "memory", mem = cJSON_CreateObject());
-      cJSON_AddItemToObject(root, "files", files = cJSON_CreateArray());
-      cJSON_AddNumberToObject(mem,"pipe_size", pipe_size);
-      cJSON_AddNumberToObject(mem,"pipe_total_memory", pipe_totalmem);
+    root = cJSON_CreateObject();
+    cJSON_AddItemToObject(root, "version", cJSON_CreateString("alpha"));
+    cJSON_AddItemToObject(root, "memory", mem = cJSON_CreateObject());
+    cJSON_AddItemToObject(root, "files", files = cJSON_CreateArray());
+    cJSON_AddNumberToObject(mem,"pipe_size", pipe_size);
+    cJSON_AddNumberToObject(mem,"pipe_total_memory", pipe_totalmem);
 
-      int i;
-      struct node_t *node;
-      struct cache_file_t *f;
-      for (i = 0; i < inode_table->size; i++) {
+    int i;
+    struct node_t *node;
+    struct cache_file_t *f;
+    for (i = 0; i < inode_table->size; i++) {
         struct node_t *next;
         for (
           node = inode_table->store[i];
           node != NULL;
           node = next
         ) {
-          next = node->next;
-          f = node->val;
+            next = node->next;
+            f = node->val;
 
-          cJSON_AddItemToArray(files, file = cJSON_CreateObject());
-          cJSON_AddNumberToObject(file, "inode", node->key);
-          cJSON_AddNumberToObject(file, "size", f->st.st_size);
+            cJSON_AddItemToArray(files, file = cJSON_CreateObject());
+            cJSON_AddNumberToObject(file, "inode", node->key);
+            cJSON_AddNumberToObject(file, "size", f->st.st_size);
 
         }
-      }
+    }
 
-      out = cJSON_Print(root);
+    out = cJSON_Print(root);
 
 
-      sr->headers.content_length = strlen(out);
+    sr->headers.content_length = strlen(out);
 
-      mk_api->header_send(cs->socket, cs, sr);
+    mk_api->header_send(cs->socket, cs, sr);
 
-      mk_api->socket_send(cs->socket, out, strlen(out));
+    mk_api->socket_send(cs->socket, out, strlen(out));
 
-      // printf("got a call for the api!\n");
+    // printf("got a call for the api!\n");
 
-      cJSON_Delete(root);
-      free(out);
-      return MK_PLUGIN_RET_END;
+    cJSON_Delete(root);
+    free(out);
+    return MK_PLUGIN_RET_END;
 
 }
 
@@ -539,26 +539,26 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     path[sr->uri_processed.len] = '\0';
     printf("path: %s\n", path);
     if (strcmp(path, "/monkey-cache/stats") == 0) {
-      return serve_stats(cs, sr);
+        return serve_stats(cs, sr);
     }
 
     if (sr->file_info.size < 0 ||
-      sr->file_info.is_file == MK_FALSE ||
-      sr->file_info.read_access == MK_FALSE ||
-      sr->method != HTTP_METHOD_GET) {
+        sr->file_info.is_file == MK_FALSE ||
+        sr->file_info.read_access == MK_FALSE ||
+        sr->method != HTTP_METHOD_GET) {
 
-      mk_info("not a file, passing on the file :)");
-      return MK_PLUGIN_RET_NOT_ME;
+        mk_info("not a file, passing on the file :)");
+        return MK_PLUGIN_RET_NOT_ME;
     }
 
     struct cache_req_t *req = cache_reqs_get(cs->socket);
 
     if (req) {
-      //printf("got back an old request, continuing stage 30!\n");
-      return MK_PLUGIN_RET_CONTINUE;
+        //printf("got back an old request, continuing stage 30!\n");
+        return MK_PLUGIN_RET_CONTINUE;
     }
     if (!req) {
-      req = cache_reqs_new();
+        req = cache_reqs_new();
     }
 
     req->sr = sr;
