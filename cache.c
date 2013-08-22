@@ -25,10 +25,13 @@
 
 #include "MKPlugin.h"
 
-#include "ht.h"
-#include "utils.h"
+#include "ht/ht.h"
+#include "utils/utils.h"
 
-#include "cJSON.h"
+#include "cJSON/cJSON.h"
+
+#define API_PREFIX "/monkey-cache"
+#define API_PREFIX_LEN 13
 
 MONKEY_PLUGIN("cache",         /* shortname */
               "Monkey Cache", /* name */
@@ -457,6 +460,7 @@ int _mkp_event_write(int fd) {
         mk_info("no data to send, returning event_write!");
         return MK_PLUGIN_RET_EVENT_CLOSE;
     }
+
     int ret = serve_req(req);
 
     if (ret <= 0) {
@@ -473,7 +477,6 @@ int _mkp_event_write(int fd) {
         return MK_PLUGIN_RET_EVENT_CONTINUE;
     }
 }
-
 int serve_stats(struct client_session *cs, struct session_request *sr)
 {
 
@@ -525,6 +528,17 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
     return MK_PLUGIN_RET_END;
 
 }
+int serve_api(struct client_session *cs, struct session_request *sr) {
+    char *uri = sr->uri_processed.data + API_PREFIX_LEN;
+    if (memcmp(uri, "/stats", 6) == 0) {
+        printf("serving api for stats!\n");
+        return serve_stats(cs, sr);
+    }
+
+    printf("api call not suppoerted!\n");
+    mk_api->http_request_error(MK_CLIENT_NOT_FOUND, cs, sr);
+    return MK_PLUGIN_RET_END;
+}
 
 int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
                   struct session_request *sr)
@@ -534,12 +548,13 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 
     //mk_info("running stage 30");
 
-    char path[1024];
-    memcpy(path, sr->uri_processed.data, sr->uri_processed.len);
-    path[sr->uri_processed.len] = '\0';
-    printf("path: %s\n", path);
-    if (strcmp(path, "/monkey-cache/stats") == 0) {
-        return serve_stats(cs, sr);
+    // check if its a call for the api's
+    if (sr->uri_processed.len > API_PREFIX_LEN) {
+        char *uri = sr->uri_processed.data;
+        if (memcmp(uri, (void *) API_PREFIX, API_PREFIX_LEN) == 0) {
+            printf("serving api!\n");
+            return serve_api(cs, sr);
+        }
     }
 
     if (sr->file_info.size < 0 ||
@@ -657,6 +672,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
                 old_keepalive = sr->keep_alive = MK_TRUE,
                 old_close = sr->close_now = MK_FALSE,
                 old_conlen = sr->connection.len;
+
             if (sr->connection.len == 0) sr->connection.len = 1;
 
             mk_api->header_send(file->cache_headers.pipe[1], cs, sr);

@@ -8,7 +8,7 @@ doent cache enough to make any significant performance difference.
 Status
 ======
 Just bypasses the monkey static file serving and handles it on its own with
-plain text mime type, it caches and its on par kernel caching internally,
+plain text mime type, it caches and its on par with kernel caching internally,
 but its eagerly awaiting perf boost is still on the way
 
 Installation
