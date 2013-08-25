@@ -20,3 +20,12 @@ Installation
     ./configure
     make
     ./bin/monkey
+
+API Viewer
+==========
+Cache plugin exposes a json api to monitor and configure the plugin.
+    # to use the api, make a get request to /cache/stats
+    # ./bin/monkey
+    curl localhost:2001/cache/stats
+A simple web ui is also included, for now its pretty simple (just dumps the
+api every second). To view it open the brower to /cache/webui/index.html
