@@ -25,6 +25,7 @@
 #include <math.h>
 
 #include "MKPlugin.h"
+#include "mk_mimetype.h"
 
 #include "ht/ht.h"
 #include "utils/utils.h"
@@ -187,8 +188,6 @@ struct cache_req_t * cache_req_new() {
     return req;
 }
 
-
-
 struct cache_req_t * cache_reqs_get(int socket) {
     struct mk_list *reqs = pthread_getspecific(cache_reqs);
     struct mk_list *curr;
@@ -231,12 +230,49 @@ const mk_pointer mk_default_mime = mk_pointer_init("text/plain\r\n");
 char conf_dir[MAX_PATH_LEN];
 int conf_dir_len;
 
+#define MIME_MAX_LEN 128
+#define MIME_LOOKUP_MAX 10
+struct mime_map_t {
+    // file extention
+    char ext[MIME_MAX_LEN];
+
+    // actual mime
+    char mime[MIME_MAX_LEN];
+};
+
+struct mime_map_t mime_map[MIME_LOOKUP_MAX];
 
 int _mkp_init(struct plugin_api **api, char *confdir) {
+
+    char config_path[MAX_PATH_LEN];
 
     mk_api = *api;
     strncpy(conf_dir, confdir, MAX_PATH_LEN);
     conf_dir_len = strlen(confdir);
+
+
+    snprintf(config_path, MAX_PATH_LEN, "%scache.conf", confdir);
+    struct mk_config *cnf = mk_api->config_create(config_path);
+
+    struct mk_config_section *section = mk_api->config_section_get(cnf, "MIMETYPES");
+    struct mk_list *mime_head;
+    struct mk_config_entry *entry;
+
+    int i = 0;
+    mk_list_foreach(mime_head, &section->entries) {
+        entry = mk_list_entry(mime_head, struct mk_config_entry, _head);
+
+        if (i < MIME_LOOKUP_MAX) {
+            strncpy(mime_map[i].ext, entry->key, MIME_MAX_LEN);
+            snprintf(mime_map[i].mime, MIME_MAX_LEN, "%s\r\n", entry->val);
+        }
+        else {
+            break;
+        }
+        i++;
+    }
+
+    mk_api->config_free(cnf);
 
     return 0;
 }
@@ -491,11 +527,13 @@ int _mkp_event_write(int fd) {
         return MK_PLUGIN_RET_EVENT_CLOSE;
     }
 
+
     int ret = serve_req(req);
 
     if (ret <= 0) {
 
         cache_reqs_del(fd);
+
         mk_api->http_request_end(fd);
         //printf("dont with the request, ending it!\n");
 
@@ -698,6 +736,31 @@ struct cache_file_t *cache_file_get(const char *path) {
 
     return file;
 }
+
+const mk_pointer get_mime(char *path) {
+    const mk_pointer mime = mk_default_mime;
+    int i, j;
+
+    int len = strlen(path);
+    for (j = len; j > 0; j--) {
+        if (path[j - 1] != '.')
+            continue;
+
+        for (i = 0; i < MIME_LOOKUP_MAX; i++) {
+            if (strcmp(path + j, mime_map[i].ext) == 0) {
+                mk_pointer tmp = {
+                    .data = mime_map[i].mime,
+                    .len = strlen(mime_map[i].mime)
+                };
+
+                return tmp;
+            }
+        }
+        break;
+    }
+
+    return mime;
+}
 int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
                   struct session_request *sr)
 {
@@ -773,7 +836,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
         // sr->headers.last_modified = sr->file_info.last_modification;
         sr->headers.content_length = file->st.st_size;
         sr->headers.real_length = file->st.st_size;
-        sr->headers.content_type = mk_default_mime;
+        sr->headers.content_type = get_mime(req->file->path);
         cache_file_fill_headers(file, cs, sr);
     }
 
@@ -788,7 +851,6 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
         return MK_PLUGIN_RET_END;
     }
 
-    printf("cant finish request now, waiting till next cycle\n");
     return MK_PLUGIN_RET_CONTINUE;
 }
 
