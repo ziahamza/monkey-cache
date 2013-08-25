@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html ng-app="webui">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,10 +10,12 @@
   <link rel="stylesheet" href="bootstrap-theme.min.css">
 
   <script src="angular.min.js"></script>
+  <script src="script.js"></script>
 </head>
 
-<body>
-  <h1>Hello Monkey!</h1>
+<body ng-controller="MainCtrl">
+  <h1>Monkey Cache API Viewer!</h1>
+  <pre>{{api}}</pre>
 </body>
 
 </html>

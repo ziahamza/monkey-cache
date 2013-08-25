@@ -545,6 +545,31 @@ int _mkp_event_write(int fd) {
         return MK_PLUGIN_RET_EVENT_CONTINUE;
     }
 }
+
+const mk_pointer get_mime(char *path) {
+    const mk_pointer mime = mk_default_mime;
+    int i, j;
+
+    int len = strlen(path);
+    for (j = len; j > 0; j--) {
+        if (path[j - 1] != '.')
+            continue;
+
+        for (i = 0; i < MIME_LOOKUP_MAX; i++) {
+            if (strcmp(path + j, mime_map[i].ext) == 0) {
+                mk_pointer tmp = {
+                    .data = mime_map[i].mime,
+                    .len = strlen(mime_map[i].mime)
+                };
+
+                return tmp;
+            }
+        }
+        break;
+    }
+
+    return mime;
+}
 int serve_stats(struct client_session *cs, struct session_request *sr)
 {
 
@@ -554,10 +579,9 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
     char *out;
 
     root = cJSON_CreateObject();
-    cJSON_AddItemToObject(root, "version", cJSON_CreateString("alpha"));
     cJSON_AddItemToObject(root, "memory", mem = cJSON_CreateObject());
     cJSON_AddItemToObject(root, "files", files = cJSON_CreateArray());
-    cJSON_AddNumberToObject(mem,"PIPE_SIZE", PIPE_SIZE);
+    cJSON_AddNumberToObject(mem,"pipe_size", PIPE_SIZE);
     cJSON_AddNumberToObject(mem,"pipe_total_memory", pipe_totalmem);
 
     int i;
@@ -574,6 +598,7 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
             f = node->val;
 
             cJSON_AddItemToArray(files, file = cJSON_CreateObject());
+            cJSON_AddStringToObject(file, "path", f->path);
             cJSON_AddNumberToObject(file, "inode", node->key);
             cJSON_AddNumberToObject(file, "size", f->st.st_size);
 
@@ -584,6 +609,7 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
 
 
     sr->headers.content_length = strlen(out);
+    sr->headers.content_type = get_mime(".json");
 
     mk_api->header_send(cs->socket, cs, sr);
 
@@ -735,31 +761,6 @@ struct cache_file_t *cache_file_get(const char *path) {
     }
 
     return file;
-}
-
-const mk_pointer get_mime(char *path) {
-    const mk_pointer mime = mk_default_mime;
-    int i, j;
-
-    int len = strlen(path);
-    for (j = len; j > 0; j--) {
-        if (path[j - 1] != '.')
-            continue;
-
-        for (i = 0; i < MIME_LOOKUP_MAX; i++) {
-            if (strcmp(path + j, mime_map[i].ext) == 0) {
-                mk_pointer tmp = {
-                    .data = mime_map[i].mime,
-                    .len = strlen(mime_map[i].mime)
-                };
-
-                return tmp;
-            }
-        }
-        break;
-    }
-
-    return mime;
 }
 int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
                   struct session_request *sr)
