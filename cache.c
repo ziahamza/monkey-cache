@@ -27,10 +27,10 @@
 #include "MKPlugin.h"
 #include "mk_mimetype.h"
 
-#include "ht/ht.h"
-#include "utils/utils.h"
+#include "ht.h"
+#include "utils.h"
 
-#include "cJSON/cJSON.h"
+#include "cJSON.h"
 
 #define API_PREFIX "/cache"
 #define API_PREFIX_LEN 6
@@ -546,7 +546,7 @@ int _mkp_event_write(int fd) {
     }
 }
 
-const mk_pointer get_mime(char *path) {
+mk_pointer get_mime(char *path) {
     const mk_pointer mime = mk_default_mime;
     int i, j;
 

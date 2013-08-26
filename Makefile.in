@@ -6,7 +6,7 @@ CC_QUIET= @echo -n; $CC
 CFLAGS	= $CFLAGS
 LDFLAGS = $LDFLAGS
 DEFS    = $DEFS
-CACHE_OBJECTS = cache.o ht/ht.o utils/utils.o cJSON/cJSON.o
+CACHE_OBJECTS = cache.o ht.o utils.o cJSON.o
 
 -include $(CACHE_OBJECTS:.o=.d)
 
