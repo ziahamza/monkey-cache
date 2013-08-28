@@ -15,11 +15,14 @@ struct table_t {
 };
 
 
-struct table_t * table_alloc();
+struct table_t *table_alloc();
 void table_free(struct table_t *);
 
+void *table_get(struct table_t *, ino_t);
+
 void table_add(struct table_t *, ino_t, void *);
-void * table_get(struct table_t *, ino_t);
+void table_del(struct table_t *, ino_t);
+
 
 
 #endif

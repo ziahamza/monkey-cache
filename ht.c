@@ -62,3 +62,20 @@ void table_add(struct table_t *table, ino_t key, void *val) {
   table->store[hash] = node;
 }
 
+void table_del(struct table_t *table, ino_t key) {
+  size_t hash = key_hash(key, table->size);
+  struct node_t *node = table->store[hash], *prev;
+  if (node->key == key) {
+    table->store[hash] = node->next;
+    free(node);
+    return;
+  }
+  for (prev = node, node = node->next; node; prev = node, node = node->next) {
+    if (node->key == key) {
+      prev->next = node->next;
+      free(node);
+      return;
+    }
+  }
+}
+

@@ -775,11 +775,19 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     }
 
     struct cache_file_t *file = NULL;
+    mk_pointer uri = sr->uri_processed;
 
+    if (sr->method == HTTP_METHOD_POST) {
+        mk_info("got a post request! for path: %s\n", uri.data);
+        printf("Post data: %s\n\n", sr->data.data);
+
+
+
+        return MK_PLUGIN_RET_END;
+    }
     if (sr->method == HTTP_METHOD_GET)
         file = cache_file_get(sr->real_path.data);
 
-    mk_pointer uri = sr->uri_processed;
 
     // check if its a call for the api's
     if (
@@ -789,6 +797,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     ) {
         uri.data += API_PREFIX_LEN;
         uri.len -= API_PREFIX_LEN;
+
         if (uri.len >= 6 && memcmp(uri.data, "/stats", 6) == 0) {
             return serve_stats(cs, sr);
         }
