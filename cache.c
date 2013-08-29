@@ -1,4 +1,4 @@
-/* vim: set tabstop=4 shiftwidth=4 expandtab: */
+/* vim: set tabstop=4 shiftwidth=4 softtabstop=4 expandtab: */
 
 #include <stdio.h>
 #include <string.h>
@@ -36,6 +36,7 @@
 #define API_PREFIX_LEN 6
 
 #define MAX_PATH_LEN 1024
+#define MAX_URI_LEN 512
 
 // size of a single pipe
 #define PIPE_SIZE 512 * 1024
@@ -47,18 +48,20 @@ MONKEY_PLUGIN("cache",         /* shortname */
 
 pthread_key_t cache_reqs;
 pthread_key_t pool_reqs;
+pthread_key_t pipe_buf_pool;
 
-struct table_t *inode_table;
+struct table_t *file_table;
 pthread_mutex_t table_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 int devnull;
 // total memory reserved by the plugin in form of pipes
+// TODO: make it either atomic or protected by a lock
 int pipe_totalmem = 0;
 
 int createpipe(int *fds) {
     if (pipe2(fds, O_NONBLOCK | O_CLOEXEC) < 0) {
         perror("cannot create a pipe!");
-        return 0;
+        mk_bug(1);
     }
 
     // optimisation on linux, increase pipe size
@@ -98,35 +101,30 @@ struct pipe_buf_t {
     struct mk_list _head;
 };
 
-void pipe_buf_free(struct pipe_buf_t *buf) {
-    closepipe(buf->pipe);
-}
-
-struct pipe_buf_t * pipe_buf_init(struct pipe_buf_t *buf) {
-    buf->filled = 0;
-    buf->cap = createpipe(buf->pipe);
-
-    pthread_mutex_init(&buf->write_mutex, NULL);
-
-    return buf;
-}
 
 struct cache_file_t {
-    // open fd of the file
+    // open fd of the file, -1 if fd not available
     int fd;
-    void *mmap;
-    int mmap_len;
 
-    struct stat st;
+    // should be mmap in case fd is set, otherwise normal buf
+    // if mmap then munmap for cleanup, free in case of normal buf
+    // note that buf.len >= size due to alignment
+    mk_pointer buf;
 
-    char path[MAX_PATH_LEN];
+    off_t size;
+
+    // hashed based on uri's, assuming mostly unique uri per file
+    // NOTE: previously it was based on inodes, but that made it
+    // hard to add custom buffer files in that scheme
+    char uri[MAX_URI_LEN];
 
     // list of pipe_buf_t
     struct mk_list cache;
 
     // cached headers, along with some duplicate file content from cache
     // header len is the length of the headers in the pipe
-    struct pipe_buf_t cache_headers;
+    struct pipe_buf_t *cache_headers;
+
     // length of the headers, rest is file contents
     long header_len;
 };
@@ -135,13 +133,14 @@ struct cache_req_t {
     int socket;
 
     struct cache_file_t *file;
+
     // pending file data to be send
     struct pipe_buf_t *curr;
     long bytes_offset, bytes_to_send;
 
 
     // pipe buffer for the request
-    struct pipe_buf_t buf;
+    struct pipe_buf_t *buf;
 
     struct mk_list _head;
 };
@@ -159,25 +158,68 @@ void pool_reqs_init() {
     pthread_setspecific(pool_reqs, pool);
 }
 
+void pipe_buf_pool_init() {
+    struct mk_list *pool = mk_api->mem_alloc(sizeof(struct mk_list));
+    mk_list_init(pool);
+    pthread_setspecific(pipe_buf_pool, pool);
+}
 
-struct cache_req_t * cache_req_new() {
+void pipe_buf_flush(struct pipe_buf_t *buf) {
+    printf("flushing what ever is left of pipe: %d\n", buf->filled);
+    int res = splice(buf->pipe[0], NULL, devnull, NULL, buf->filled, SPLICE_F_MOVE);
+    if (res < 0) {
+        perror("cannot flush pipe!!!\n");
+        mk_bug(1);
+    }
+    buf->filled -= res;
+
+    mk_bug(buf->filled != 0);
+}
+
+struct pipe_buf_t *pipe_buf_new() {
+    struct mk_list *pool = pthread_getspecific(pipe_buf_pool);
+    struct pipe_buf_t *buf;
+    if (mk_list_is_empty(pool) == -1) {
+        buf = mk_list_entry_first(pool, struct pipe_buf_t, _head);
+        mk_list_del(&buf->_head);
+
+        if (buf->filled) {
+            pipe_buf_flush(buf);
+        }
+
+    }
+    else {
+        buf = mk_api->mem_alloc(sizeof(struct pipe_buf_t));
+
+        buf->filled = 0;
+        buf->cap = createpipe(buf->pipe);
+
+        pthread_mutex_init(&buf->write_mutex, NULL);
+    }
+
+    mk_bug(buf->filled != 0);
+    return buf;
+}
+void pipe_buf_free(struct pipe_buf_t *buf) {
+    mk_list_add(&buf->_head, pthread_getspecific(pipe_buf_pool));
+}
+
+struct cache_req_t *cache_req_new() {
   struct mk_list *pool = pthread_getspecific(pool_reqs);
   struct cache_req_t *req;
 
     if (mk_list_is_empty(pool) == -1) {
         // printf("reusing an exhisting request!\n");
         req = mk_list_entry_first(pool, struct cache_req_t, _head);
-        if (req->buf.filled) {
-            flushpipe(req->buf.pipe, req->buf.filled);
-        }
 
         mk_list_del(&req->_head);
 
     }
     else {
         req = mk_api->mem_alloc(sizeof(struct cache_req_t));
-        pipe_buf_init(&req->buf);
     }
+
+    req->buf = pipe_buf_new();
 
 
     req->socket = -1;
@@ -185,10 +227,11 @@ struct cache_req_t * cache_req_new() {
     mk_list_add(&req->_head, reqs);
     //mk_info("creating a request!");
 
+    mk_bug(req->buf->filled != 0);
     return req;
 }
 
-struct cache_req_t * cache_reqs_get(int socket) {
+struct cache_req_t *cache_reqs_get(int socket) {
     struct mk_list *reqs = pthread_getspecific(cache_reqs);
     struct mk_list *curr;
 
@@ -203,12 +246,15 @@ struct cache_req_t * cache_reqs_get(int socket) {
 }
 
 void cache_req_del(struct cache_req_t *req) {
+    pipe_buf_free(req->buf);
+
+    req->buf = NULL;
     mk_list_del(&req->_head);
+
 
     // reuse the request as pipe creation can be expensive
     mk_list_add(&req->_head, pthread_getspecific(pool_reqs));
-    // pipe_buf_free(&req->buf);
-    // mk_api->mem_free(req);
+
 }
 
 void cache_reqs_del(int socket) {
@@ -224,7 +270,6 @@ void cache_reqs_del(int socket) {
     }
 
 }
-
 
 const mk_pointer mk_default_mime = mk_pointer_init("text/plain\r\n");
 char conf_dir[MAX_PATH_LEN];
@@ -278,7 +323,7 @@ int _mkp_init(struct plugin_api **api, char *confdir) {
 }
 
 void _mkp_exit() {
-    table_free(inode_table);
+    table_free(file_table);
     // TODO: free cache_reqs
 }
 
@@ -291,7 +336,7 @@ int _mkp_core_prctx(struct server_config *config) {
     pthread_key_create(&cache_reqs, NULL);
     pthread_key_create(&pool_reqs, NULL);
 
-    inode_table = table_alloc();
+    file_table = table_alloc();
 
     return 0;
 }
@@ -300,6 +345,7 @@ void _mkp_core_thctx() {
 
     cache_reqs_init();
     pool_reqs_init();
+    pipe_buf_pool_init();
 }
 
 int http_send_file(struct cache_req_t *req)
@@ -365,14 +411,14 @@ int fill_req_curr(struct cache_req_t *req) {
     struct cache_file_t *file = req->file;
 
     // offset of the file before the start of filled cache
-    long off = req->bytes_offset + req->buf.filled;
+    long off = req->bytes_offset + req->buf->filled;
 
     // total amount of data that can be filled from file to cache
     long len = curr->cap;
 
-    if (off + len > file->st.st_size) {
+    if (off + len > file->size) {
         //  this should be the last portion of file
-        len = file->st.st_size - off;
+        len = file->size - off;
         /*
         if (len > 0)
             printf("hopefully the last portion of file "
@@ -381,17 +427,17 @@ int fill_req_curr(struct cache_req_t *req) {
         */
     }
 
-    mk_bug(off > file->st.st_size);
+    mk_bug(off > file->size);
     mk_bug(len < 0);
 
     if (curr->filled == len) return 0;
 
     if (curr->filled < len) {
 
-        if (mem_to_pipe(file->mmap, curr, off + curr->filled, len - curr->filled) < 0) {
+        if (mem_to_pipe(file->buf.data, curr, off + curr->filled, len - curr->filled) < 0) {
 
             printf("Tried to write from %ld (out of %ld) till "
-                "%ld\n", off, file->st.st_size, off + len);
+                "%ld\n", off, file->size, off + len);
         }
     }
 
@@ -406,16 +452,16 @@ int http_send_mmap_zcpy(struct cache_req_t *req) {
 
     // loop until the current file pointer is a the end or tmp buffer
     // still has data
-    while (req->bytes_to_send > 0 && (req->curr || req->buf.filled)) {
+    while (req->bytes_to_send > 0 && (req->curr || req->buf->filled)) {
         // until range requests are not supported, this is a bug
         fflush(stdout);
-        mk_bug(req->bytes_offset + req->bytes_to_send != file->st.st_size);
+        mk_bug(req->bytes_offset + req->bytes_to_send != file->size);
 
         // fill in buf pipe with req data
         // if buffer is empty and cache is all set, fill it with the cache
-        if (req->curr && fill_req_curr(req) == 0 && !req->buf.filled) {
+        if (req->curr && fill_req_curr(req) == 0 && !req->buf->filled) {
             // fill curr into buf
-            pbytes = tee(req->curr->pipe[0], req->buf.pipe[1],
+            pbytes = tee(req->curr->pipe[0], req->buf->pipe[1],
                 req->curr->filled, SPLICE_F_NONBLOCK);
 
             if (pbytes < 0) {
@@ -433,13 +479,13 @@ int http_send_mmap_zcpy(struct cache_req_t *req) {
             //    pbytes);
 
 
-            req->buf.filled += pbytes;
+            req->buf->filled += pbytes;
 
             if (&file->cache == req->curr->_head.next) {
                 // reached the start so finished with file buffers
 
                 // printf("cache finished, only buffer needs to be "
-                //    "flushed (%d bytes)!\n", req->buf.filled);
+                //    "flushed (%d bytes)!\n", req->buf->filled);
                 req->curr =  NULL;
             }
             else {
@@ -450,15 +496,15 @@ int http_send_mmap_zcpy(struct cache_req_t *req) {
         }
 
 SEND_BUFFER:
-        if (!req->buf.filled) {
+        if (!req->buf->filled) {
             // nothing to do, just get out of the loop
             // mk_info("surprisingly no data to send over to the socket!\n");
             break;
         }
 
         // finally splicing data to the socket
-        pbytes = splice(req->buf.pipe[0], NULL, req->socket, NULL,
-            req->buf.filled, SPLICE_F_NONBLOCK | SPLICE_F_MOVE);
+        pbytes = splice(req->buf->pipe[0], NULL, req->socket, NULL,
+            req->buf->filled, SPLICE_F_NONBLOCK | SPLICE_F_MOVE);
         if (pbytes < 0) {
             if (errno == EAGAIN) {
                 // blocking socket, lets try in the next cycle
@@ -470,7 +516,7 @@ SEND_BUFFER:
             return -1;
         }
 
-        req->buf.filled -= pbytes;
+        req->buf->filled -= pbytes;
         req->bytes_to_send -= pbytes;
         req->bytes_offset += pbytes;
 
@@ -478,7 +524,7 @@ SEND_BUFFER:
 
         mk_bug(req->bytes_to_send < 0);
 
-        if (req->buf.filled) {
+        if (req->buf->filled) {
             //mk_info("not all data was sent, i can tell that its gonna "
             //    "block next time ;)");
         }
@@ -489,8 +535,8 @@ SEND_BUFFER:
 }
 
 void serve_cache_headers(struct cache_req_t *req) {
-    int ret = tee(req->file->cache_headers.pipe[0],
-        req->buf.pipe[1], req->file->cache_headers.filled, SPLICE_F_NONBLOCK);
+    int ret = tee(req->file->cache_headers->pipe[0],
+        req->buf->pipe[1], req->file->cache_headers->filled, SPLICE_F_NONBLOCK);
 
     if (ret < 0) {
         perror("cannot tee into the request buffer!!\n");
@@ -499,7 +545,7 @@ void serve_cache_headers(struct cache_req_t *req) {
 
     mk_bug(ret < req->file->header_len);
 
-    req->buf.filled += ret;
+    req->buf->filled += ret;
 
     // HACK: make headers seem like file contents
     req->bytes_offset -= req->file->header_len;
@@ -507,7 +553,7 @@ void serve_cache_headers(struct cache_req_t *req) {
 }
 
 int serve_req(struct cache_req_t *req) {
-    if (req->file->mmap == (void *) -1) {
+    if (req->file->buf.data == (void *) -1) {
         mk_info("mmap invalid, sending standard file");
         return http_send_file(req);
     }
@@ -570,6 +616,7 @@ mk_pointer get_mime(char *path) {
 
     return mime;
 }
+
 int serve_stats(struct client_session *cs, struct session_request *sr)
 {
 
@@ -587,10 +634,10 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
     int i;
     struct node_t *node;
     struct cache_file_t *f;
-    for (i = 0; i < inode_table->size; i++) {
+    for (i = 0; i < file_table->size; i++) {
         struct node_t *next;
         for (
-          node = inode_table->store[i];
+          node = file_table->store[i];
           node != NULL;
           node = next
         ) {
@@ -598,9 +645,8 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
             f = node->val;
 
             cJSON_AddItemToArray(files, file = cJSON_CreateObject());
-            cJSON_AddStringToObject(file, "path", f->path);
-            cJSON_AddNumberToObject(file, "inode", node->key);
-            cJSON_AddNumberToObject(file, "size", f->st.st_size);
+            cJSON_AddStringToObject(file, "uri", f->uri);
+            cJSON_AddNumberToObject(file, "size", f->size);
 
         }
     }
@@ -626,8 +672,8 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
 void cache_file_fill_headers(struct cache_file_t *file,
     struct client_session *cs, struct session_request *sr) {
     int ret = 0;
-    pthread_mutex_lock(&file->cache_headers.write_mutex);
-    if (!file->cache_headers.filled) {
+    pthread_mutex_lock(&file->cache_headers->write_mutex);
+    if (!file->cache_headers->filled) {
 
         // HACK: change server request values to prevent monkey to
         // not add "connection: close" in any case as it messes up things
@@ -639,9 +685,9 @@ void cache_file_fill_headers(struct cache_file_t *file,
 
         if (sr->connection.len == 0) sr->connection.len = 1;
 
-        mk_api->header_send(file->cache_headers.pipe[1], cs, sr);
+        mk_api->header_send(file->cache_headers->pipe[1], cs, sr);
 
-        if (ioctl(file->cache_headers.pipe[0], FIONREAD,
+        if (ioctl(file->cache_headers->pipe[0], FIONREAD,
               &file->header_len) != 0) {
             perror("cannot find size of pipe buf!");
             mk_bug(1);
@@ -653,13 +699,13 @@ void cache_file_fill_headers(struct cache_file_t *file,
         sr->close_now = old_close;
         sr->connection.len = old_conlen;
 
-        file->cache_headers.filled = file->header_len;
+        file->cache_headers->filled = file->header_len;
         // fill in the empty header pipe space with some initial file
         // data to send them in a single tee syscall, only in case
         // there is enough room which would be true for small files
         // which fit inside a pipe
         int leftover =
-          file->cache_headers.cap - file->cache_headers.filled;
+          file->cache_headers->cap - file->cache_headers->filled;
 
         struct pipe_buf_t *first_buf = mk_list_entry_first(&file->cache,
                 struct pipe_buf_t, _head);
@@ -667,12 +713,12 @@ void cache_file_fill_headers(struct cache_file_t *file,
         if (leftover > first_buf->filled) {
            if (first_buf->filled) {
               ret = tee(first_buf->pipe[0],
-                file->cache_headers.pipe[1], leftover,
+                file->cache_headers->pipe[1], leftover,
                 SPLICE_F_NONBLOCK);
 
               mk_bug(ret <= 0);
 
-              file->cache_headers.filled += ret;
+              file->cache_headers->filled += ret;
            }
         }
         else {
@@ -680,21 +726,30 @@ void cache_file_fill_headers(struct cache_file_t *file,
             // along with the rest of the headers
         }
 
-        mk_bug(file->cache_headers.filled == 0);
+        mk_bug(file->cache_headers->filled == 0);
     }
-    pthread_mutex_unlock(&file->cache_headers.write_mutex);
+    pthread_mutex_unlock(&file->cache_headers->write_mutex);
 }
 
-struct cache_file_t *cache_file_new(const char *path, struct stat st) {
+struct cache_file_t *cache_file_new(const char *path, const char *uri) {
     struct cache_file_t *file;
 
+    struct stat st;
+    if (stat(path, &st) == -1 || S_ISDIR(st.st_mode)) {
+        return NULL;
+    }
+
+    if (st.st_size <= 0)
+        return NULL;
+
     pthread_mutex_lock(&table_mutex);
+
     // another check in case its been already added
-    file = table_get(inode_table, st.st_ino);
+    file = table_get(file_table, uri);
 
     if (!file) {
-        printf("creating a new file cache with path %s and size %ld\n",
-            path, st.st_size);
+        printf("creating a new file cache with path %s and uri %s\n",
+            path, uri);
         int fd = open(path, O_RDONLY | O_NONBLOCK);
         if (fd == -1) {
             perror("cannot open the file!");
@@ -714,59 +769,46 @@ struct cache_file_t *cache_file_new(const char *path, struct stat st) {
         }
 
         file = mk_api->mem_alloc(sizeof(struct cache_file_t));
-        strncpy(file->path, path, MAX_PATH_LEN);
+        strncpy(file->uri, uri, MAX_URI_LEN);
 
         mk_list_init(&file->cache);
 
-        file->st = st;
+        file->size = st.st_size;
 
-        file->mmap_len = mmap_len;
+        file->buf.data = mmap_ptr;
+        file->buf.len = mmap_len;
 
-        file->mmap = mmap_ptr;
 
-        pipe_buf_init(&file->cache_headers);
+        file->cache_headers = pipe_buf_new();
 
 
         // file file buffer with empty pipes for now
-        long len = file->st.st_size;
+        long len = file->size;
         struct pipe_buf_t *tmp;
         while (len > 0) {
-            tmp  = mk_api->mem_alloc(sizeof(struct pipe_buf_t));
-            pipe_buf_init(tmp);
+            tmp = pipe_buf_new();
 
             mk_list_add(&tmp->_head, &file->cache);
 
             len -= tmp->cap;
         }
 
-        table_add(inode_table, file->st.st_ino, file);
+        table_add(file_table, file->uri, file);
     }
     pthread_mutex_unlock(&table_mutex);
 
     return file;
 }
-struct cache_file_t *cache_file_get(const char *path) {
-    struct stat st;
-    if (stat(path, &st) == -1 || S_ISDIR(st.st_mode)) {
-        return NULL;
-    }
-
-    if (st.st_size <= 0)
-        return NULL;
-
-    struct cache_file_t *file = table_get(inode_table, st.st_ino);
-
-    if (!file) {
-        return cache_file_new(path, st);
-    }
-
-    return file;
+struct cache_file_t *cache_file_get(const char *uri) {
+    return table_get(file_table, uri);
 }
+
 int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
                   struct session_request *sr)
 {
     (void) plugin;
     char path[MAX_PATH_LEN];
+    char uri[MAX_URI_LEN];
 
     struct cache_req_t *req = cache_reqs_get(cs->socket);
     if (req) {
@@ -775,61 +817,83 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     }
 
     struct cache_file_t *file = NULL;
-    mk_pointer uri = sr->uri_processed;
+
+    int uri_len = sr->uri_processed.len > MAX_URI_LEN ?
+        MAX_URI_LEN : sr->uri_processed.len;
+
+    int path_len = sr->real_path.len > MAX_PATH_LEN ?
+        MAX_PATH_LEN : sr->real_path.len;
+
+    strncpy(uri, sr->uri_processed.data, uri_len);
+    strncpy(path, sr->real_path.data, path_len);
+    uri[uri_len] = path[path_len] = '\0';
+
+
 
     if (sr->method == HTTP_METHOD_POST) {
-        mk_info("got a post request! for path: %s\n", uri.data);
+        mk_info("got a post request! for urih: %s\n", uri);
         printf("Post data: %s\n\n", sr->data.data);
-
-
 
         return MK_PLUGIN_RET_END;
     }
-    if (sr->method == HTTP_METHOD_GET)
-        file = cache_file_get(sr->real_path.data);
+    if (sr->method == HTTP_METHOD_GET) {
+        file = cache_file_get(uri);
+    }
 
 
     // check if its a call for the api's
     if (
         !file &&
-        uri.len > API_PREFIX_LEN &&
-        memcmp(uri.data, API_PREFIX, API_PREFIX_LEN) == 0
+        uri_len > API_PREFIX_LEN &&
+        memcmp(uri, API_PREFIX, API_PREFIX_LEN) == 0
     ) {
-        uri.data += API_PREFIX_LEN;
-        uri.len -= API_PREFIX_LEN;
+        // REPLACE uri_ptr with offset
+        mk_pointer uri_ptr = {
+            .data = uri + API_PREFIX_LEN,
+            .len = uri_len - API_PREFIX_LEN
+        };
 
-        if (uri.len >= 6 && memcmp(uri.data, "/stats", 6) == 0) {
+        if (uri_ptr.len >= 4 && memcmp(uri_ptr.data, "/add", 4) == 0 && sr->data.len) {
+            printf("adding a new file with contents: %s\n", sr->data.data);
+        }
+
+        if (uri_ptr.len >= 6 && memcmp(uri_ptr.data, "/stats", 6) == 0) {
             return serve_stats(cs, sr);
         }
 
-        if (uri.len >= 6 && memcmp(uri.data, "/webui", 6) == 0) {
+        if (uri_ptr.len >= 6 && memcmp(uri_ptr.data, "/webui", 6) == 0) {
             // remove the '/' as its already exists at the
             // end of conf_dir
-            uri.data += 1;
-            uri.len -= 1;
+            uri_ptr.data += 1;
+            uri_ptr.len -= 1;
 
-            mk_bug(conf_dir_len + uri.len >= MAX_PATH_LEN);
+            mk_bug(conf_dir_len + uri_ptr.len >= MAX_PATH_LEN);
 
             memcpy(path, conf_dir, conf_dir_len);
-            memcpy(path + conf_dir_len, uri.data, uri.len);
+            memcpy(path + conf_dir_len, uri_ptr.data, uri_ptr.len);
 
-            path[conf_dir_len + uri.len] = '\0';
+            path[conf_dir_len + uri_ptr.len] = '\0';
 
-            file = cache_file_get(path);
+            file = cache_file_new(path, uri_ptr.data);
         }
     }
 
     if (!file) {
-        mk_info("cant find the file, passing on the request :)");
-        return MK_PLUGIN_RET_NOT_ME;
+        file = cache_file_new(path, uri);
+        if (!file) {
+            mk_info("cant find the file, passing on the request :)");
+            return MK_PLUGIN_RET_NOT_ME;
+        }
     }
 
     req = cache_req_new();
 
+    mk_bug(req->buf->filled != 0);
+
     req->socket = cs->socket;
 
     req->bytes_offset = 0;
-    req->bytes_to_send = file->st.st_size;
+    req->bytes_to_send = file->size;
 
     req->file = file;
     req->curr = mk_list_entry_first(&file->cache,
@@ -838,15 +902,17 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     // early fill of file request in caes it is not served
     fill_req_curr(req);
 
-    mk_bug(req->buf.filled != 0);
+    if (req->buf->filled != 0) {
+        mk_bug(req->buf->filled != 0);
+    }
 
     mk_api->header_set_http_status(sr, MK_HTTP_OK);
 
-    if (!file->cache_headers.filled) {
+    if (!file->cache_headers->filled) {
         // sr->headers.last_modified = sr->file_info.last_modification;
-        sr->headers.content_length = file->st.st_size;
-        sr->headers.real_length = file->st.st_size;
-        sr->headers.content_type = get_mime(req->file->path);
+        sr->headers.content_length = file->size;
+        sr->headers.real_length = file->size;
+        sr->headers.content_type = get_mime(path);
         cache_file_fill_headers(file, cs, sr);
     }
 
@@ -877,3 +943,4 @@ int _mkp_event_timeout(int socket)
     cache_reqs_del(socket);
     return MK_PLUGIN_RET_EVENT_NEXT;
 }
+

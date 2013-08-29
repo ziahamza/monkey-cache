@@ -1,8 +1,11 @@
 #ifndef __HT_H_
 #define __HT_H_
 
+#include <string.h>
+
 struct node_t {
-  ino_t key;
+  // provided by the caller
+  const char *key;
   void *val;
 
   struct node_t *next;
@@ -18,10 +21,12 @@ struct table_t {
 struct table_t *table_alloc();
 void table_free(struct table_t *);
 
-void *table_get(struct table_t *, ino_t);
+void *table_get(struct table_t *, const char *);
 
-void table_add(struct table_t *, ino_t, void *);
-void table_del(struct table_t *, ino_t);
+// key string managed by the caller and used till table_del
+void table_add(struct table_t *, const char *, void *);
+// returns resulting string passed initially to table_add
+const char *table_del(struct table_t *, const char *);
 
 
 

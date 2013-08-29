@@ -4,8 +4,16 @@
 
 #define HT_MIN_SIZE 8192
 
-size_t key_hash(ino_t key, size_t max) {
-  return ((uint32_t) key * 2654435761U) % max;
+// see: http://stackoverflow.com/questions/2351087/what-is-the-best-32bit-hash-function-for-short-strings-tag-names
+size_t key_hash(const char *key, size_t max) {
+  unsigned int h;
+  unsigned char *p;
+
+  h = 0;
+  for (p = (unsigned char*) key; *p != '\0'; p++)
+    h = 37 * h + *p;
+
+  return h % max;
 }
 
 
@@ -37,11 +45,14 @@ void table_free(struct table_t *table) {
   free(table);
 }
 
-void * table_get(struct table_t *table, ino_t key) {
+void * table_get(struct table_t *table, const char *key) {
   struct node_t *node;
   size_t hash = key_hash(key, table->size);
   for (node = table->store[hash]; node; node = node->next) {
-    if (node->key == key) {
+
+    // optimised for case when same str pointer is passed
+    if (node->key == key || strcmp(node->key, key) == 0) {
+      // TODO: optisize by pushing node to the start of the list
       return node->val;
     }
   }
@@ -49,8 +60,7 @@ void * table_get(struct table_t *table, ino_t key) {
   return NULL;
 }
 
-
-void table_add(struct table_t *table, ino_t key, void *val) {
+void table_add(struct table_t *table, const char *key, void *val) {
 
   size_t hash = key_hash(key, table->size);
 
@@ -62,20 +72,24 @@ void table_add(struct table_t *table, ino_t key, void *val) {
   table->store[hash] = node;
 }
 
-void table_del(struct table_t *table, ino_t key) {
+const char *table_del(struct table_t *table, const char *key) {
   size_t hash = key_hash(key, table->size);
   struct node_t *node = table->store[hash], *prev;
-  if (node->key == key) {
+  const char *nkey = node->key;
+  if (nkey == key || strcmp(nkey, key) == 0) {
     table->store[hash] = node->next;
-    free(node);
-    return;
+    goto FREE_NODE;
   }
   for (prev = node, node = node->next; node; prev = node, node = node->next) {
-    if (node->key == key) {
+    if (node->key == key || strcmp(node->key, key)) {
       prev->next = node->next;
-      free(node);
-      return;
+      break;
     }
   }
+
+FREE_NODE:
+  free(node);
+
+  return nkey;
 }
 
