@@ -543,7 +543,11 @@ void serve_cache_headers(struct cache_req_t *req) {
         mk_bug(1);
     }
 
-    mk_bug(ret < req->file->header_len);
+    if (ret < req->file->header_len) {
+
+        printf("teed %d data instead of headers len %ld\n", ret, req->file->header_len);
+        mk_bug(ret < req->file->header_len);
+    }
 
     req->buf->filled += ret;
 
@@ -780,6 +784,7 @@ struct cache_file_t *cache_file_new(const char *path, const char *uri) {
 
 
         file->cache_headers = pipe_buf_new();
+        file->header_len = 0;
 
 
         // file file buffer with empty pipes for now
@@ -840,7 +845,6 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
         file = cache_file_get(uri);
     }
 
-
     // check if its a call for the api's
     if (
         !file &&
@@ -874,7 +878,8 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 
             path[conf_dir_len + uri_ptr.len] = '\0';
 
-            file = cache_file_new(path, uri_ptr.data);
+            // -1 for including the backslash
+            file = cache_file_new(path, uri_ptr.data - 1);
         }
     }
 
