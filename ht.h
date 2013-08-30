@@ -25,8 +25,8 @@ void *table_get(struct table_t *, const char *);
 
 // key string managed by the caller and used till table_del
 void table_add(struct table_t *, const char *, void *);
-// returns resulting string passed initially to table_add
-const char *table_del(struct table_t *, const char *);
+// returns the added object after delete
+void *table_del(struct table_t *, const char *);
 
 
 

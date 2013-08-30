@@ -621,57 +621,7 @@ mk_pointer get_mime(char *path) {
     return mime;
 }
 
-int serve_stats(struct client_session *cs, struct session_request *sr)
-{
 
-    mk_api->header_set_http_status(sr, MK_HTTP_OK);
-
-    cJSON *root, *mem, *files, *file;
-    char *out;
-
-    root = cJSON_CreateObject();
-    cJSON_AddItemToObject(root, "memory", mem = cJSON_CreateObject());
-    cJSON_AddItemToObject(root, "files", files = cJSON_CreateArray());
-    cJSON_AddNumberToObject(mem,"pipe_size", PIPE_SIZE);
-    cJSON_AddNumberToObject(mem,"pipe_total_memory", pipe_totalmem);
-
-    int i;
-    struct node_t *node;
-    struct cache_file_t *f;
-    for (i = 0; i < file_table->size; i++) {
-        struct node_t *next;
-        for (
-          node = file_table->store[i];
-          node != NULL;
-          node = next
-        ) {
-            next = node->next;
-            f = node->val;
-
-            cJSON_AddItemToArray(files, file = cJSON_CreateObject());
-            cJSON_AddStringToObject(file, "uri", f->uri);
-            cJSON_AddNumberToObject(file, "size", f->size);
-
-        }
-    }
-
-    out = cJSON_Print(root);
-
-
-    sr->headers.content_length = strlen(out);
-    sr->headers.content_type = get_mime(".json");
-
-    mk_api->header_send(cs->socket, cs, sr);
-
-    mk_api->socket_send(cs->socket, out, strlen(out));
-
-    // printf("got a call for the api!\n");
-
-    cJSON_Delete(root);
-    free(out);
-    return MK_PLUGIN_RET_END;
-
-}
 
 void cache_file_fill_headers(struct cache_file_t *file,
     struct client_session *cs, struct session_request *sr) {
@@ -735,6 +685,121 @@ void cache_file_fill_headers(struct cache_file_t *file,
     pthread_mutex_unlock(&file->cache_headers->write_mutex);
 }
 
+
+void cache_file_free(struct cache_file_t *file) {
+    if (!file) {
+        return;
+    }
+
+    if (file->fd != -1) close(file->fd);
+    if (file->buf.data != (void *) -1) munmap(file->buf.data, file->buf.len);
+
+
+    pipe_buf_free(file->cache_headers);
+
+
+    struct mk_list *reqs = &file->cache;
+    struct mk_list *curr, *next;
+
+    mk_list_foreach_safe(curr, next, reqs) {
+        struct pipe_buf_t *buf = mk_list_entry(curr, struct pipe_buf_t, _head);
+        mk_list_del(&buf->_head);
+        pipe_buf_free(buf);
+    }
+
+    mk_api->mem_free(file);
+}
+
+struct cache_file_t *cache_file_get(const char *uri) {
+    return table_get(file_table, uri);
+}
+
+void reset_file(const char *uri) {
+
+    pthread_mutex_lock(&table_mutex);
+    struct cache_file_t *file = table_del(file_table, uri);
+    pthread_mutex_unlock(&table_mutex);
+    if (!file) {
+        printf("cannot reset file when its not there!\n");
+    }
+    cache_file_free(file);
+    return;
+}
+
+struct cache_file_t *cache_file_tmp(const char *uri, mk_pointer *ptr) {
+
+    struct cache_file_t *file = NULL;
+    pthread_mutex_lock(&table_mutex);
+
+    // Cant use reset_file as it locks the table mutex!
+    file = table_del(file_table, uri);
+    cache_file_free(file);
+
+    mk_bug(cache_file_get(uri) != NULL);
+
+
+    char tmpfile[] = "/tmp/monkey-cache-XXXXXX";
+    int fd = mkostemp(tmpfile, O_NOATIME | O_NONBLOCK);
+    if (fd == -1) {
+        perror("cannot open the file!");
+        return NULL;
+    }
+
+    unlink(tmpfile);
+
+    // set the initial file size
+    lseek(fd, ptr->len, SEEK_SET);
+    write(fd, "", 1);
+    lseek(fd, 0, SEEK_SET);
+
+    int mmap_len =
+        ceil((double) ptr->len / MMAP_SIZE) * MMAP_SIZE;
+
+    void *mmap_ptr = mmap(NULL, mmap_len,
+        PROT_WRITE, MAP_PRIVATE, fd, 0);
+
+
+    if (mmap_ptr == (void *) -1) {
+        close(fd);
+        perror("cannot create an mmap!");
+        return NULL;
+    }
+
+    // may be better to replace it with series of vmsplice and splice
+    // in case of large file uploads
+    memcpy(mmap_ptr, ptr->data, ptr->len);
+
+    file = mk_api->mem_alloc(sizeof(struct cache_file_t));
+    strncpy(file->uri, uri, MAX_URI_LEN);
+    file->uri[MAX_URI_LEN] = '\0';
+
+    mk_list_init(&file->cache);
+
+    file->size = ptr->len;
+
+    file->buf.data = mmap_ptr;
+    file->buf.len = mmap_len;
+
+
+    file->cache_headers = pipe_buf_new();
+    file->header_len = 0;
+
+    // file file buffer with empty pipes for now
+    long len = file->size;
+    struct pipe_buf_t *tmp;
+    while (len > 0) {
+        tmp = pipe_buf_new();
+
+        mk_list_add(&tmp->_head, &file->cache);
+
+        len -= tmp->cap;
+    }
+
+    table_add(file_table, file->uri, file);
+
+    pthread_mutex_unlock(&table_mutex);
+    return file;
+}
 struct cache_file_t *cache_file_new(const char *path, const char *uri) {
     struct cache_file_t *file;
 
@@ -774,6 +839,7 @@ struct cache_file_t *cache_file_new(const char *path, const char *uri) {
 
         file = mk_api->mem_alloc(sizeof(struct cache_file_t));
         strncpy(file->uri, uri, MAX_URI_LEN);
+        file->uri[MAX_URI_LEN] = '\0';
 
         mk_list_init(&file->cache);
 
@@ -785,7 +851,6 @@ struct cache_file_t *cache_file_new(const char *path, const char *uri) {
 
         file->cache_headers = pipe_buf_new();
         file->header_len = 0;
-
 
         // file file buffer with empty pipes for now
         long len = file->size;
@@ -804,10 +869,80 @@ struct cache_file_t *cache_file_new(const char *path, const char *uri) {
 
     return file;
 }
-struct cache_file_t *cache_file_get(const char *uri) {
-    return table_get(file_table, uri);
+
+int serve_str(struct client_session *cs, struct session_request *sr, char *str) {
+
+    mk_api->header_set_http_status(sr, MK_HTTP_OK);
+
+    sr->headers.content_length = strlen(str);
+    sr->headers.content_type = get_mime(".txt");
+
+    mk_api->header_send(cs->socket, cs, sr);
+
+    mk_api->socket_send(cs->socket, str, strlen(str));
+    return MK_PLUGIN_RET_END;
 }
 
+int serve_reset(struct client_session *cs, struct session_request *sr, char *uri) {
+    reset_file(uri);
+    return serve_str(cs, sr, "Cache Reset Successfully!\n");
+}
+
+int serve_add(struct client_session *cs, struct session_request *sr, char *uri) {
+    cache_file_tmp(uri, &sr->data);
+    return serve_str(cs, sr, "Cache resource added sucessfully!\n");
+}
+int serve_stats(struct client_session *cs, struct session_request *sr)
+{
+
+    mk_api->header_set_http_status(sr, MK_HTTP_OK);
+
+    cJSON *root, *mem, *files, *file;
+    char *out;
+
+    root = cJSON_CreateObject();
+    cJSON_AddItemToObject(root, "memory", mem = cJSON_CreateObject());
+    cJSON_AddItemToObject(root, "files", files = cJSON_CreateArray());
+    cJSON_AddNumberToObject(mem,"pipe_size", PIPE_SIZE);
+    cJSON_AddNumberToObject(mem,"pipe_total_memory", pipe_totalmem);
+
+    int i;
+    struct node_t *node;
+    struct cache_file_t *f;
+    for (i = 0; i < file_table->size; i++) {
+        struct node_t *next;
+        for (
+          node = file_table->store[i];
+          node != NULL;
+          node = next
+        ) {
+            next = node->next;
+            f = node->val;
+
+            cJSON_AddItemToArray(files, file = cJSON_CreateObject());
+            cJSON_AddStringToObject(file, "uri", f->uri);
+            cJSON_AddNumberToObject(file, "size", f->size);
+
+        }
+    }
+
+    out = cJSON_Print(root);
+
+
+    sr->headers.content_length = strlen(out);
+    sr->headers.content_type = get_mime(".json");
+
+    mk_api->header_send(cs->socket, cs, sr);
+
+    mk_api->socket_send(cs->socket, out, strlen(out));
+
+    // printf("got a call for the api!\n");
+
+    cJSON_Delete(root);
+    free(out);
+    return MK_PLUGIN_RET_END;
+
+}
 int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
                   struct session_request *sr)
 {
@@ -833,14 +968,6 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     strncpy(path, sr->real_path.data, path_len);
     uri[uri_len] = path[path_len] = '\0';
 
-
-
-    if (sr->method == HTTP_METHOD_POST) {
-        mk_info("got a post request! for urih: %s\n", uri);
-        printf("Post data: %s\n\n", sr->data.data);
-
-        return MK_PLUGIN_RET_END;
-    }
     if (sr->method == HTTP_METHOD_GET) {
         file = cache_file_get(uri);
     }
@@ -857,12 +984,28 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
             .len = uri_len - API_PREFIX_LEN
         };
 
-        if (uri_ptr.len >= 4 && memcmp(uri_ptr.data, "/add", 4) == 0 && sr->data.len) {
-            printf("adding a new file with contents: %s\n", sr->data.data);
+        if (uri_ptr.len >= 5 && memcmp(uri_ptr.data, "/add/", 5) == 0 && sr->data.len) {
+            uri_ptr.data += 4;
+            uri_ptr.len -= 4;
+
+            strncpy(path, uri_ptr.data, uri_ptr.len);
+            path[uri_ptr.len] = '\0';
+
+            return serve_add(cs, sr, path);
         }
 
         if (uri_ptr.len >= 6 && memcmp(uri_ptr.data, "/stats", 6) == 0) {
             return serve_stats(cs, sr);
+        }
+
+        if (uri_ptr.len >= 7 && memcmp(uri_ptr.data, "/reset/", 7) == 0) {
+            uri_ptr.data += 6;
+            uri_ptr.len -= 6;
+
+            strncpy(path, uri_ptr.data, uri_ptr.len);
+            path[uri_ptr.len] = '\0';
+
+            return serve_reset(cs, sr, path);
         }
 
         if (uri_ptr.len >= 6 && memcmp(uri_ptr.data, "/webui", 6) == 0) {
@@ -893,7 +1036,6 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 
     req = cache_req_new();
 
-    mk_bug(req->buf->filled != 0);
 
     req->socket = cs->socket;
 
@@ -907,9 +1049,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     // early fill of file request in caes it is not served
     fill_req_curr(req);
 
-    if (req->buf->filled != 0) {
-        mk_bug(req->buf->filled != 0);
-    }
+    mk_bug(req->buf->filled != 0);
 
     mk_api->header_set_http_status(sr, MK_HTTP_OK);
 

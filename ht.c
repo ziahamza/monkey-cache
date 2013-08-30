@@ -72,24 +72,29 @@ void table_add(struct table_t *table, const char *key, void *val) {
   table->store[hash] = node;
 }
 
-const char *table_del(struct table_t *table, const char *key) {
+void *table_del(struct table_t *table, const char *key) {
   size_t hash = key_hash(key, table->size);
   struct node_t *node = table->store[hash], *prev;
+  void *val;
+
+  if (!node) return NULL;
   const char *nkey = node->key;
   if (nkey == key || strcmp(nkey, key) == 0) {
     table->store[hash] = node->next;
-    goto FREE_NODE;
+    val = node->val;
+    free(node);
   }
-  for (prev = node, node = node->next; node; prev = node, node = node->next) {
-    if (node->key == key || strcmp(node->key, key)) {
-      prev->next = node->next;
-      break;
+  else {
+    for (prev = node, node = node->next; node; prev = node, node = node->next) {
+      if (node->key == key || strcmp(node->key, key)) {
+        prev->next = node->next;
+        val = node->val;
+        free(node);
+        break;
+      }
     }
   }
 
-FREE_NODE:
-  free(node);
-
-  return nkey;
+  return val;
 }
 
