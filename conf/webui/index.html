@@ -14,8 +14,17 @@
 </head>
 
 <body ng-controller="MainCtrl">
-  <h1>Monkey Cache API Viewer!</h1>
-  <pre>{{api}}</pre>
+  <div class="container-fluid">
+    <h1>Monkey Cache API!</h1>
+    <h2>Files:</h2>
+    <ul>
+      <li ng-repeat="file in files" class="row">
+        <span class="span9">{{file.uri}} (Size: {{file.size}})</span>
+        <button class="btn btn-danger span3" ng-click="reset(file.uri)">Reset File</button>
+      </li>
+    </ul>
+    <pre>{{api}}</pre>
+  </div>
 </body>
 
 </html>

@@ -50,6 +50,9 @@ pthread_key_t cache_reqs;
 pthread_key_t pool_reqs;
 pthread_key_t pipe_buf_pool;
 
+#define PIPE_BUF_POOL_MAX 512
+#define POOL_REQS_MAX 16
+
 struct table_t *file_table;
 pthread_mutex_t table_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -176,6 +179,16 @@ void pipe_buf_flush(struct pipe_buf_t *buf) {
     mk_bug(buf->filled != 0);
 }
 
+int list_len(struct mk_list *list) {
+    int len = 0;
+    struct mk_list *curr;
+    mk_list_foreach(curr, list) {
+       len++;
+    }
+
+    return len;
+}
+
 struct pipe_buf_t *pipe_buf_new() {
     struct mk_list *pool = pthread_getspecific(pipe_buf_pool);
     struct pipe_buf_t *buf;
@@ -200,8 +213,15 @@ struct pipe_buf_t *pipe_buf_new() {
     mk_bug(buf->filled != 0);
     return buf;
 }
+
 void pipe_buf_free(struct pipe_buf_t *buf) {
-    mk_list_add(&buf->_head, pthread_getspecific(pipe_buf_pool));
+    struct mk_list *pool = pthread_getspecific(pipe_buf_pool);
+    if (list_len(pool) < PIPE_BUF_POOL_MAX)
+        mk_list_add(&buf->_head, pool);
+    else {
+        closepipe(buf->pipe);
+        mk_api->mem_free(buf);
+    }
 }
 
 struct cache_req_t *cache_req_new() {
@@ -214,13 +234,15 @@ struct cache_req_t *cache_req_new() {
 
         mk_list_del(&req->_head);
 
+        if (req->buf->filled) {
+            pipe_buf_flush(req->buf);
+        }
+
     }
     else {
         req = mk_api->mem_alloc(sizeof(struct cache_req_t));
+        req->buf = pipe_buf_new();
     }
-
-    req->buf = pipe_buf_new();
-
 
     req->socket = -1;
     struct mk_list *reqs = pthread_getspecific(cache_reqs);
@@ -246,15 +268,18 @@ struct cache_req_t *cache_reqs_get(int socket) {
 }
 
 void cache_req_del(struct cache_req_t *req) {
-    pipe_buf_free(req->buf);
-
-    req->buf = NULL;
     mk_list_del(&req->_head);
 
+    struct mk_list *pool = pthread_getspecific(pool_reqs);
 
-    // reuse the request as pipe creation can be expensive
-    mk_list_add(&req->_head, pthread_getspecific(pool_reqs));
-
+    if (list_len(pool) < POOL_REQS_MAX) {
+        // reuse the request as pipe creation can be expensive
+        mk_list_add(&req->_head, pthread_getspecific(pool_reqs));
+    }
+    else {
+        pipe_buf_free(req->buf);
+        mk_api->mem_free(req);
+    }
 }
 
 void cache_reqs_del(int socket) {
@@ -719,9 +744,6 @@ void reset_file(const char *uri) {
     pthread_mutex_lock(&table_mutex);
     struct cache_file_t *file = table_del(file_table, uri);
     pthread_mutex_unlock(&table_mutex);
-    if (!file) {
-        printf("cannot reset file when its not there!\n");
-    }
     cache_file_free(file);
     return;
 }
@@ -771,7 +793,7 @@ struct cache_file_t *cache_file_tmp(const char *uri, mk_pointer *ptr) {
 
     file = mk_api->mem_alloc(sizeof(struct cache_file_t));
     strncpy(file->uri, uri, MAX_URI_LEN);
-    file->uri[MAX_URI_LEN] = '\0';
+    file->uri[MAX_URI_LEN - 1] = '\0';
 
     mk_list_init(&file->cache);
 
@@ -839,7 +861,7 @@ struct cache_file_t *cache_file_new(const char *path, const char *uri) {
 
         file = mk_api->mem_alloc(sizeof(struct cache_file_t));
         strncpy(file->uri, uri, MAX_URI_LEN);
-        file->uri[MAX_URI_LEN] = '\0';
+        file->uri[MAX_URI_LEN - 1] = '\0';
 
         mk_list_init(&file->cache);
 
