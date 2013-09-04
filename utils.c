@@ -1,3 +1,5 @@
+/* vim: set tabstop=4 shiftwidth=4 softtabstop=4 expandtab: */
+
 #include <stdlib.h>
 #include <stdio.h>
 
@@ -31,3 +33,12 @@ void buf_free(struct buf_t *buf) {
 }
 
 
+int mk_list_len(struct mk_list *list) {
+    int len = 0;
+    struct mk_list *curr;
+    mk_list_foreach(curr, list) {
+       len++;
+    }
+
+    return len;
+}

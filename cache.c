@@ -1,260 +1,46 @@
 /* vim: set tabstop=4 shiftwidth=4 softtabstop=4 expandtab: */
 
+
 #include <stdio.h>
 #include <string.h>
 
-#include <arpa/inet.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/sendfile.h>
-#include <netdb.h>
+#include <sys/mman.h>
 
-#define _GNU_SOURCE
+#define __GNU_SOURCE
 #define __USE_GNU
 
 #include <fcntl.h>
-#include <unistd.h>
 #include <sys/ioctl.h>
-#include <sys/stat.h>
 
-#include <sys/mman.h>
-#define MMAP_SIZE sysconf(_SC_PAGE_SIZE)
-
-#include <sys/uio.h>
-
-#include <math.h>
 
 #include "MKPlugin.h"
-#include "mk_mimetype.h"
+#include "cJSON.h"
 
 #include "ht.h"
 #include "utils.h"
 
-#include "cJSON.h"
+#include "pipe_buf.h"
+#include "cache_req.h"
+#include "cache_file.h"
 
-#define API_PREFIX "/cache"
-#define API_PREFIX_LEN 6
-
-#define MAX_PATH_LEN 1024
-#define MAX_URI_LEN 512
-
-// size of a single pipe
-#define PIPE_SIZE 512 * 1024
+#include "constants.h"
 
 MONKEY_PLUGIN("cache",         /* shortname */
               "Monkey Cache", /* name */
               VERSION,        /* version */
               MK_PLUGIN_CORE_PRCTX | MK_PLUGIN_CORE_THCTX |  MK_PLUGIN_STAGE_30); /* hooks */
 
-pthread_key_t cache_reqs;
-pthread_key_t pool_reqs;
-pthread_key_t pipe_buf_pool;
+pthread_key_t curr_reqs;
 
-#define PIPE_BUF_POOL_MAX 512
-#define POOL_REQS_MAX 16
-
-struct table_t *file_table;
-pthread_mutex_t table_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-int devnull;
-// total memory reserved by the plugin in form of pipes
-// TODO: make it either atomic or protected by a lock
-int pipe_totalmem = 0;
-
-int createpipe(int *fds) {
-    if (pipe2(fds, O_NONBLOCK | O_CLOEXEC) < 0) {
-        perror("cannot create a pipe!");
-        mk_bug(1);
-    }
-
-    // optimisation on linux, increase pipe size
-    if (fcntl(fds[1], F_SETPIPE_SZ, PIPE_SIZE) < 0) {
-        perror("changing pipe size");
-        mk_bug(1);
-    }
-
-    pipe_totalmem += PIPE_SIZE;
-
-    return PIPE_SIZE;
-}
-
-void closepipe(int *fds) {
-    close(fds[0]);
-    close(fds[1]);
-
-    pipe_totalmem -= PIPE_SIZE;
-}
-
-void flushpipe(int *fds, int size) {
-    printf("flushing what ever is left of pipe: %d\n", size);
-    int res = splice(fds[0], NULL, devnull, NULL, size, SPLICE_F_MOVE);
-    if (res < 0) {
-        perror("cannot flush pipe!!!\n");
-    }
-    mk_bug(res != size);
-}
-
-struct pipe_buf_t {
-    int pipe[2];
-    int filled;     // amount of data filled in pipe
-    int cap;        // tatal buffer size of pipe (should block afterwards)
-
-    pthread_mutex_t write_mutex; // write access to the buffer
-
-    struct mk_list _head;
-};
-
-
-struct cache_file_t {
-    // open fd of the file, -1 if fd not available
-    int fd;
-
-    // should be mmap in case fd is set, otherwise normal buf
-    // if mmap then munmap for cleanup, free in case of normal buf
-    // note that buf.len >= size due to alignment
-    mk_pointer buf;
-
-    off_t size;
-
-    // hashed based on uri's, assuming mostly unique uri per file
-    // NOTE: previously it was based on inodes, but that made it
-    // hard to add custom buffer files in that scheme
-    char uri[MAX_URI_LEN];
-
-    // list of pipe_buf_t
-    struct mk_list cache;
-
-    // cached headers, along with some duplicate file content from cache
-    // header len is the length of the headers in the pipe
-    struct pipe_buf_t *cache_headers;
-
-    // length of the headers, rest is file contents
-    long header_len;
-};
-
-struct cache_req_t {
-    int socket;
-
-    struct cache_file_t *file;
-
-    // pending file data to be send
-    struct pipe_buf_t *curr;
-    long bytes_offset, bytes_to_send;
-
-
-    // pipe buffer for the request
-    struct pipe_buf_t *buf;
-
-    struct mk_list _head;
-};
-
-void cache_reqs_init() {
+void curr_reqs_init() {
 
     struct mk_list *reqs = mk_api->mem_alloc(sizeof(struct mk_list));
     mk_list_init(reqs);
-    pthread_setspecific(cache_reqs, reqs);
+    pthread_setspecific(curr_reqs, reqs);
 }
 
-void pool_reqs_init() {
-    struct mk_list *pool = mk_api->mem_alloc(sizeof(struct mk_list));
-    mk_list_init(pool);
-    pthread_setspecific(pool_reqs, pool);
-}
-
-void pipe_buf_pool_init() {
-    struct mk_list *pool = mk_api->mem_alloc(sizeof(struct mk_list));
-    mk_list_init(pool);
-    pthread_setspecific(pipe_buf_pool, pool);
-}
-
-void pipe_buf_flush(struct pipe_buf_t *buf) {
-    printf("flushing what ever is left of pipe: %d\n", buf->filled);
-    int res = splice(buf->pipe[0], NULL, devnull, NULL, buf->filled, SPLICE_F_MOVE);
-    if (res < 0) {
-        perror("cannot flush pipe!!!\n");
-        mk_bug(1);
-    }
-    buf->filled -= res;
-
-    mk_bug(buf->filled != 0);
-}
-
-int list_len(struct mk_list *list) {
-    int len = 0;
-    struct mk_list *curr;
-    mk_list_foreach(curr, list) {
-       len++;
-    }
-
-    return len;
-}
-
-struct pipe_buf_t *pipe_buf_new() {
-    struct mk_list *pool = pthread_getspecific(pipe_buf_pool);
-    struct pipe_buf_t *buf;
-    if (mk_list_is_empty(pool) == -1) {
-        buf = mk_list_entry_first(pool, struct pipe_buf_t, _head);
-        mk_list_del(&buf->_head);
-
-        if (buf->filled) {
-            pipe_buf_flush(buf);
-        }
-
-    }
-    else {
-        buf = mk_api->mem_alloc(sizeof(struct pipe_buf_t));
-
-        buf->filled = 0;
-        buf->cap = createpipe(buf->pipe);
-
-        pthread_mutex_init(&buf->write_mutex, NULL);
-    }
-
-    mk_bug(buf->filled != 0);
-    return buf;
-}
-
-void pipe_buf_free(struct pipe_buf_t *buf) {
-    struct mk_list *pool = pthread_getspecific(pipe_buf_pool);
-    if (list_len(pool) < PIPE_BUF_POOL_MAX)
-        mk_list_add(&buf->_head, pool);
-    else {
-        closepipe(buf->pipe);
-        mk_api->mem_free(buf);
-    }
-}
-
-struct cache_req_t *cache_req_new() {
-  struct mk_list *pool = pthread_getspecific(pool_reqs);
-  struct cache_req_t *req;
-
-    if (mk_list_is_empty(pool) == -1) {
-        // printf("reusing an exhisting request!\n");
-        req = mk_list_entry_first(pool, struct cache_req_t, _head);
-
-        mk_list_del(&req->_head);
-
-        if (req->buf->filled) {
-            pipe_buf_flush(req->buf);
-        }
-
-    }
-    else {
-        req = mk_api->mem_alloc(sizeof(struct cache_req_t));
-        req->buf = pipe_buf_new();
-    }
-
-    req->socket = -1;
-    struct mk_list *reqs = pthread_getspecific(cache_reqs);
-    mk_list_add(&req->_head, reqs);
-    //mk_info("creating a request!");
-
-    mk_bug(req->buf->filled != 0);
-    return req;
-}
-
-struct cache_req_t *cache_reqs_get(int socket) {
-    struct mk_list *reqs = pthread_getspecific(cache_reqs);
+struct cache_req_t *curr_reqs_get(int socket) {
+    struct mk_list *reqs = pthread_getspecific(curr_reqs);
     struct mk_list *curr;
 
     mk_list_foreach(curr, reqs) {
@@ -267,23 +53,13 @@ struct cache_req_t *cache_reqs_get(int socket) {
     return NULL;
 }
 
-void cache_req_del(struct cache_req_t *req) {
-    mk_list_del(&req->_head);
-
-    struct mk_list *pool = pthread_getspecific(pool_reqs);
-
-    if (list_len(pool) < POOL_REQS_MAX) {
-        // reuse the request as pipe creation can be expensive
-        mk_list_add(&req->_head, pthread_getspecific(pool_reqs));
-    }
-    else {
-        pipe_buf_free(req->buf);
-        mk_api->mem_free(req);
-    }
+void curr_reqs_add(struct cache_req_t *req) {
+    struct mk_list *reqs = pthread_getspecific(curr_reqs);
+    mk_list_add(&req->_head, reqs);
 }
 
-void cache_reqs_del(int socket) {
-    struct mk_list *reqs = pthread_getspecific(cache_reqs);
+void curr_reqs_del(int socket) {
+    struct mk_list *reqs = pthread_getspecific(curr_reqs);
     struct mk_list *curr, *next;
 
     mk_list_foreach_safe(curr, next, reqs) {
@@ -348,29 +124,30 @@ int _mkp_init(struct plugin_api **api, char *confdir) {
 }
 
 void _mkp_exit() {
-    table_free(file_table);
-    // TODO: free cache_reqs
+    // TODO: free curr_reqs
+    cache_file_exit();
+    pipe_buf_exit();
+    cache_req_exit();
 }
 
 int _mkp_core_prctx(struct server_config *config) {
     (void) config;
 
     mk_info("cache: a new process ctx!!");
-    devnull = open("/dev/null", O_WRONLY);
+    pthread_key_create(&curr_reqs, NULL);
 
-    pthread_key_create(&cache_reqs, NULL);
-    pthread_key_create(&pool_reqs, NULL);
-
-    file_table = table_alloc();
-
+    cache_req_process_init();
+    pipe_buf_process_init();
+    cache_file_process_init();
     return 0;
 }
 void _mkp_core_thctx() {
     mk_info("cache: a new thread ctx!!");
 
-    cache_reqs_init();
-    pool_reqs_init();
-    pipe_buf_pool_init();
+    curr_reqs_init();
+    cache_req_thread_init();
+    pipe_buf_thread_init();
+    cache_file_thread_init();
 }
 
 int http_send_file(struct cache_req_t *req)
@@ -591,7 +368,7 @@ int serve_req(struct cache_req_t *req) {
 }
 
 int _mkp_event_write(int fd) {
-    struct cache_req_t *req = cache_reqs_get(fd);
+    struct cache_req_t *req = curr_reqs_get(fd);
     if (!req) {
         //mk_info("write event, but not of our request");
         return MK_PLUGIN_RET_EVENT_NEXT;
@@ -607,7 +384,7 @@ int _mkp_event_write(int fd) {
 
     if (ret <= 0) {
 
-        cache_reqs_del(fd);
+        curr_reqs_del(fd);
 
         mk_api->http_request_end(fd);
         //printf("dont with the request, ending it!\n");
@@ -646,9 +423,7 @@ mk_pointer get_mime(char *path) {
     return mime;
 }
 
-
-
-void cache_file_fill_headers(struct cache_file_t *file,
+void fill_cache_headers(struct cache_file_t *file,
     struct client_session *cs, struct session_request *sr) {
     int ret = 0;
     pthread_mutex_lock(&file->cache_headers->write_mutex);
@@ -711,187 +486,6 @@ void cache_file_fill_headers(struct cache_file_t *file,
 }
 
 
-void cache_file_free(struct cache_file_t *file) {
-    if (!file) {
-        return;
-    }
-
-    if (file->fd != -1) close(file->fd);
-    if (file->buf.data != (void *) -1) munmap(file->buf.data, file->buf.len);
-
-
-    pipe_buf_free(file->cache_headers);
-
-
-    struct mk_list *reqs = &file->cache;
-    struct mk_list *curr, *next;
-
-    mk_list_foreach_safe(curr, next, reqs) {
-        struct pipe_buf_t *buf = mk_list_entry(curr, struct pipe_buf_t, _head);
-        mk_list_del(&buf->_head);
-        pipe_buf_free(buf);
-    }
-
-    mk_api->mem_free(file);
-}
-
-struct cache_file_t *cache_file_get(const char *uri) {
-    return table_get(file_table, uri);
-}
-
-void reset_file(const char *uri) {
-
-    pthread_mutex_lock(&table_mutex);
-    struct cache_file_t *file = table_del(file_table, uri);
-    pthread_mutex_unlock(&table_mutex);
-    cache_file_free(file);
-    return;
-}
-
-struct cache_file_t *cache_file_tmp(const char *uri, mk_pointer *ptr) {
-
-    struct cache_file_t *file = NULL;
-    pthread_mutex_lock(&table_mutex);
-
-    // Cant use reset_file as it locks the table mutex!
-    file = table_del(file_table, uri);
-    cache_file_free(file);
-
-    mk_bug(cache_file_get(uri) != NULL);
-
-
-    char tmpfile[] = "/tmp/monkey-cache-XXXXXX";
-    int fd = mkostemp(tmpfile, O_NOATIME | O_NONBLOCK);
-    if (fd == -1) {
-        perror("cannot open the file!");
-        return NULL;
-    }
-
-    unlink(tmpfile);
-
-    // set the initial file size
-    lseek(fd, ptr->len, SEEK_SET);
-    write(fd, "", 1);
-    lseek(fd, 0, SEEK_SET);
-
-    int mmap_len =
-        ceil((double) ptr->len / MMAP_SIZE) * MMAP_SIZE;
-
-    void *mmap_ptr = mmap(NULL, mmap_len,
-        PROT_WRITE, MAP_PRIVATE, fd, 0);
-
-
-    if (mmap_ptr == (void *) -1) {
-        close(fd);
-        perror("cannot create an mmap!");
-        return NULL;
-    }
-
-    // may be better to replace it with series of vmsplice and splice
-    // in case of large file uploads
-    memcpy(mmap_ptr, ptr->data, ptr->len);
-
-    file = mk_api->mem_alloc(sizeof(struct cache_file_t));
-    strncpy(file->uri, uri, MAX_URI_LEN);
-    file->uri[MAX_URI_LEN - 1] = '\0';
-
-    mk_list_init(&file->cache);
-
-    file->size = ptr->len;
-
-    file->buf.data = mmap_ptr;
-    file->buf.len = mmap_len;
-
-
-    file->cache_headers = pipe_buf_new();
-    file->header_len = 0;
-
-    // file file buffer with empty pipes for now
-    long len = file->size;
-    struct pipe_buf_t *tmp;
-    while (len > 0) {
-        tmp = pipe_buf_new();
-
-        mk_list_add(&tmp->_head, &file->cache);
-
-        len -= tmp->cap;
-    }
-
-    table_add(file_table, file->uri, file);
-
-    pthread_mutex_unlock(&table_mutex);
-    return file;
-}
-struct cache_file_t *cache_file_new(const char *path, const char *uri) {
-    struct cache_file_t *file;
-
-    struct stat st;
-    if (stat(path, &st) == -1 || S_ISDIR(st.st_mode)) {
-        return NULL;
-    }
-
-    if (st.st_size <= 0)
-        return NULL;
-
-    pthread_mutex_lock(&table_mutex);
-
-    // another check in case its been already added
-    file = table_get(file_table, uri);
-
-    if (!file) {
-        printf("creating a new file cache with path %s and uri %s\n",
-            path, uri);
-        int fd = open(path, O_RDONLY | O_NONBLOCK);
-        if (fd == -1) {
-            perror("cannot open the file!");
-            return NULL;
-        }
-
-        int mmap_len =
-            ceil((double) st.st_size / MMAP_SIZE) * MMAP_SIZE;
-
-        void *mmap_ptr = mmap(NULL, mmap_len,
-            PROT_READ, MAP_PRIVATE, fd, 0);
-
-        if (mmap_ptr == (void *) -1) {
-            close(fd);
-            perror("cannot create an mmap!");
-            return NULL;
-        }
-
-        file = mk_api->mem_alloc(sizeof(struct cache_file_t));
-        strncpy(file->uri, uri, MAX_URI_LEN);
-        file->uri[MAX_URI_LEN - 1] = '\0';
-
-        mk_list_init(&file->cache);
-
-        file->size = st.st_size;
-
-        file->buf.data = mmap_ptr;
-        file->buf.len = mmap_len;
-
-
-        file->cache_headers = pipe_buf_new();
-        file->header_len = 0;
-
-        // file file buffer with empty pipes for now
-        long len = file->size;
-        struct pipe_buf_t *tmp;
-        while (len > 0) {
-            tmp = pipe_buf_new();
-
-            mk_list_add(&tmp->_head, &file->cache);
-
-            len -= tmp->cap;
-        }
-
-        table_add(file_table, file->uri, file);
-    }
-    pthread_mutex_unlock(&table_mutex);
-
-    return file;
-}
-
 int serve_str(struct client_session *cs, struct session_request *sr, char *str) {
 
     mk_api->header_set_http_status(sr, MK_HTTP_OK);
@@ -906,7 +500,7 @@ int serve_str(struct client_session *cs, struct session_request *sr, char *str) 
 }
 
 int serve_reset(struct client_session *cs, struct session_request *sr, char *uri) {
-    reset_file(uri);
+    cache_file_reset(uri);
     return serve_str(cs, sr, "Cache Reset Successfully!\n");
 }
 
@@ -926,7 +520,6 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
     cJSON_AddItemToObject(root, "memory", mem = cJSON_CreateObject());
     cJSON_AddItemToObject(root, "files", files = cJSON_CreateArray());
     cJSON_AddNumberToObject(mem,"pipe_size", PIPE_SIZE);
-    cJSON_AddNumberToObject(mem,"pipe_total_memory", pipe_totalmem);
 
     int i;
     struct node_t *node;
@@ -972,7 +565,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     char path[MAX_PATH_LEN];
     char uri[MAX_URI_LEN];
 
-    struct cache_req_t *req = cache_reqs_get(cs->socket);
+    struct cache_req_t *req = curr_reqs_get(cs->socket);
     if (req) {
         //printf("got back an old request, continuing stage 30!\n");
         return MK_PLUGIN_RET_CONTINUE;
@@ -1057,7 +650,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     }
 
     req = cache_req_new();
-
+    curr_reqs_add(req);
 
     req->socket = cs->socket;
 
@@ -1080,7 +673,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
         sr->headers.content_length = file->size;
         sr->headers.real_length = file->size;
         sr->headers.content_type = get_mime(path);
-        cache_file_fill_headers(file, cs, sr);
+        fill_cache_headers(file, cs, sr);
     }
 
     serve_cache_headers(req);
@@ -1090,7 +683,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 
     if (serve_req(req) <= 0) {
 
-        cache_reqs_del(req->socket);
+        curr_reqs_del(req->socket);
         return MK_PLUGIN_RET_END;
     }
 
@@ -1101,13 +694,13 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 int _mkp_event_error(int socket)
 {
     mk_info("got an error with a socket!");
-    cache_reqs_del(socket);
+    curr_reqs_del(socket);
     return MK_PLUGIN_RET_EVENT_NEXT;
 }
 int _mkp_event_timeout(int socket)
 {
     mk_info("got an error with a socket!");
-    cache_reqs_del(socket);
+    curr_reqs_del(socket);
     return MK_PLUGIN_RET_EVENT_NEXT;
 }
 

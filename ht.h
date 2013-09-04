@@ -1,3 +1,5 @@
+/* vim: set tabstop=4 shiftwidth=4 softtabstop=4 expandtab: */
+
 #ifndef __HT_H_
 #define __HT_H_
 

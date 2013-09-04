@@ -1,3 +1,5 @@
+/* vim: set tabstop=4 shiftwidth=4 softtabstop=4 expandtab: */
+
 #include <stdlib.h>
 #include  <stdint.h>
 #include "ht.h"
@@ -75,7 +77,7 @@ void table_add(struct table_t *table, const char *key, void *val) {
 void *table_del(struct table_t *table, const char *key) {
   size_t hash = key_hash(key, table->size);
   struct node_t *node = table->store[hash], *prev;
-  void *val;
+  void *val = NULL;
 
   if (!node) return NULL;
   const char *nkey = node->key;
