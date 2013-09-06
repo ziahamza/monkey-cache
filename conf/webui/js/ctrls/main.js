@@ -1,5 +1,5 @@
 angular
-  .module('webui', [])
+  .module('webui.ctrls.main', [])
   .controller('MainCtrl', function($scope, $http) {
     $scope.files = [];
     $scope.reset = function(uri) {

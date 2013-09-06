@@ -133,7 +133,6 @@ void _mkp_exit() {
 int _mkp_core_prctx(struct server_config *config) {
     (void) config;
 
-    mk_info("cache: a new process ctx!!");
     pthread_key_create(&curr_reqs, NULL);
 
     cache_req_process_init();
@@ -142,7 +141,6 @@ int _mkp_core_prctx(struct server_config *config) {
     return 0;
 }
 void _mkp_core_thctx() {
-    mk_info("cache: a new thread ctx!!");
 
     curr_reqs_init();
     cache_req_thread_init();
