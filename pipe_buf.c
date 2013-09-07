@@ -12,6 +12,7 @@
 #include "constants.h"
 
 int devnull;
+int pipe_mem_used = 0;
 int createpipe(int *fds) {
     if (pipe2(fds, O_NONBLOCK | O_CLOEXEC) < 0) {
         perror("cannot create a pipe!");
@@ -24,16 +25,23 @@ int createpipe(int *fds) {
         mk_bug(1);
     }
 
+    __sync_fetch_and_add(&pipe_mem_used, PIPE_SIZE);
+
     return PIPE_SIZE;
 }
 
 void closepipe(int *fds) {
     close(fds[0]);
     close(fds[1]);
+
+    __sync_fetch_and_add(&pipe_mem_used, -PIPE_SIZE);
 }
 
 void pipe_buf_process_init() {
     devnull = open("/dev/null", O_WRONLY);
+}
+int pipe_buf_mem_used() {
+    return pipe_mem_used;
 }
 void pipe_buf_thread_init() {
     struct mk_list *pool = mk_api->mem_alloc(sizeof(struct mk_list));

@@ -23,6 +23,8 @@ void pipe_buf_thread_init();
 void pipe_buf_process_init();
 void pipe_buf_exit();
 
+int pipe_buf_mem_used();
+
 struct pipe_buf_t *pipe_buf_new();
 void pipe_buf_flush(struct pipe_buf_t *);
 void pipe_buf_free(struct pipe_buf_t *);

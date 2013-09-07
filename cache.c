@@ -31,7 +31,6 @@ MONKEY_PLUGIN("cache",         /* shortname */
               VERSION,        /* version */
               MK_PLUGIN_CORE_PRCTX | MK_PLUGIN_CORE_THCTX |  MK_PLUGIN_STAGE_30); /* hooks */
 
-const mk_pointer mk_default_mime = mk_pointer_init("text/plain\r\n");
 char conf_dir[MAX_PATH_LEN];
 int conf_dir_len;
 
@@ -75,7 +74,6 @@ int _mkp_init(struct plugin_api **api, char *confdir) {
     }
 
     mk_api->config_free(cnf);
-
     return 0;
 }
 
@@ -89,6 +87,7 @@ void _mkp_exit() {
 int _mkp_core_prctx(struct server_config *config) {
     (void) config;
 
+    mk_info("Started Monkey Cache plugin");
     pthread_key_create(&curr_reqs, NULL);
 
     cache_req_process_init();
@@ -353,7 +352,7 @@ int _mkp_event_write(int fd) {
 }
 
 mk_pointer get_mime(char *path) {
-    const mk_pointer mime = mk_default_mime;
+    const mk_pointer mime = mk_pointer_init("text/plain\r\n");
     int i, j;
 
     int len = strlen(path);
@@ -475,6 +474,7 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
     cJSON_AddItemToObject(root, "memory", mem = cJSON_CreateObject());
     cJSON_AddItemToObject(root, "files", files = cJSON_CreateArray());
     cJSON_AddNumberToObject(mem,"pipe_size", PIPE_SIZE);
+    cJSON_AddNumberToObject(mem,"pipe_mem_used", pipe_buf_mem_used());
 
     int i;
     struct node_t *node;

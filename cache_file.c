@@ -52,7 +52,6 @@ struct cache_file_t *cache_file_get(const char *uri) {
 }
 
 void cache_file_reset(const char *uri) {
-
     pthread_mutex_lock(&table_mutex);
     struct cache_file_t *file = table_del(file_table, uri);
     pthread_mutex_unlock(&table_mutex);

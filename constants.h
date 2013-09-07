@@ -16,7 +16,7 @@
 // size of a single pipe
 #define PIPE_SIZE 512 * 1024
 
-#define CACHE_REQ_POOL_MAX 16
-#define PIPE_BUF_POOL_MAX 512
+#define PIPE_BUF_POOL_MAX 0
+#define CACHE_REQ_POOL_MAX 0
 
 #endif
