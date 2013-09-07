@@ -78,6 +78,7 @@ int conf_dir_len;
 
 #define MIME_MAX_LEN 128
 #define MIME_LOOKUP_MAX 10
+
 struct mime_map_t {
     // file extention
     char ext[MIME_MAX_LEN];

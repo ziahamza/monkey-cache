@@ -12,3 +12,7 @@ CACHE_OBJECTS = cache.o ht.o cache_file.o pipe_buf.o cache_req.o utils.o cJSON.o
 
 monkey-cache.so: $(CACHE_OBJECTS)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(DEFS) -shared -o $@ $^ -lc -lm
+
+test: test.o utils.o
+	$(CC) $(CFLAGS) $(LDFLAGS) $(DEFS) -o $@ $^ -lc -lm
+
