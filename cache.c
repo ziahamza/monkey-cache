@@ -77,7 +77,6 @@ char conf_dir[MAX_PATH_LEN];
 int conf_dir_len;
 
 #define MIME_MAX_LEN 128
-#define MIME_LOOKUP_MAX 10
 
 struct mime_map_t {
     // file extention
@@ -87,10 +86,9 @@ struct mime_map_t {
     char mime[MIME_MAX_LEN];
 };
 
-struct mime_map_t mime_map[MIME_LOOKUP_MAX];
+struct buf_t mime_map;
 
 int _mkp_init(struct plugin_api **api, char *confdir) {
-
     char config_path[MAX_PATH_LEN];
 
     mk_api = *api;
@@ -101,21 +99,19 @@ int _mkp_init(struct plugin_api **api, char *confdir) {
     snprintf(config_path, MAX_PATH_LEN, "%scache.conf", confdir);
     struct mk_config *cnf = mk_api->config_create(config_path);
 
+    buf_init(&mime_map, sizeof(struct mime_map_t), 16);
     struct mk_config_section *section = mk_api->config_section_get(cnf, "MIMETYPES");
     struct mk_list *mime_head;
     struct mk_config_entry *entry;
 
     int i = 0;
+    struct mime_map_t tmp;
     mk_list_foreach(mime_head, &section->entries) {
         entry = mk_list_entry(mime_head, struct mk_config_entry, _head);
 
-        if (i < MIME_LOOKUP_MAX) {
-            strncpy(mime_map[i].ext, entry->key, MIME_MAX_LEN);
-            snprintf(mime_map[i].mime, MIME_MAX_LEN, "%s\r\n", entry->val);
-        }
-        else {
-            break;
-        }
+        strncpy(tmp.ext, entry->key, MIME_MAX_LEN);
+        snprintf(tmp.mime, MIME_MAX_LEN, "%s\r\n", entry->val);
+        buf_push(&mime_map, &tmp);
         i++;
     }
 
@@ -406,11 +402,12 @@ mk_pointer get_mime(char *path) {
         if (path[j - 1] != '.')
             continue;
 
-        for (i = 0; i < MIME_LOOKUP_MAX; i++) {
-            if (strcmp(path + j, mime_map[i].ext) == 0) {
+        for (i = 0; i < mime_map.size; i++) {
+            struct mime_map_t *m = buf_get(&mime_map, i);
+            if (strcmp(path + j, m->ext) == 0) {
                 mk_pointer tmp = {
-                    .data = mime_map[i].mime,
-                    .len = strlen(mime_map[i].mime)
+                    .data = m->mime,
+                    .len = strlen(m->mime)
                 };
 
                 return tmp;
