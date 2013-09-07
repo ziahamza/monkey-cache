@@ -21,6 +21,7 @@
 
 #include "pipe_buf.h"
 #include "cache_req.h"
+#include "curr_reqs.h"
 #include "cache_file.h"
 
 #include "constants.h"
@@ -29,48 +30,6 @@ MONKEY_PLUGIN("cache",         /* shortname */
               "Monkey Cache", /* name */
               VERSION,        /* version */
               MK_PLUGIN_CORE_PRCTX | MK_PLUGIN_CORE_THCTX |  MK_PLUGIN_STAGE_30); /* hooks */
-
-pthread_key_t curr_reqs;
-
-void curr_reqs_init() {
-
-    struct mk_list *reqs = mk_api->mem_alloc(sizeof(struct mk_list));
-    mk_list_init(reqs);
-    pthread_setspecific(curr_reqs, reqs);
-}
-
-struct cache_req_t *curr_reqs_get(int socket) {
-    struct mk_list *reqs = pthread_getspecific(curr_reqs);
-    struct mk_list *curr;
-
-    mk_list_foreach(curr, reqs) {
-        struct cache_req_t *req = mk_list_entry(curr, struct cache_req_t, _head);
-        if (req->socket == socket) {
-            return req;
-        }
-    }
-
-    return NULL;
-}
-
-void curr_reqs_add(struct cache_req_t *req) {
-    struct mk_list *reqs = pthread_getspecific(curr_reqs);
-    mk_list_add(&req->_head, reqs);
-}
-
-void curr_reqs_del(int socket) {
-    struct mk_list *reqs = pthread_getspecific(curr_reqs);
-    struct mk_list *curr, *next;
-
-    mk_list_foreach_safe(curr, next, reqs) {
-        struct cache_req_t *req = mk_list_entry(curr, struct cache_req_t, _head);
-        if (req->socket == socket) {
-            cache_req_del(req);
-            return;
-        };
-    }
-
-}
 
 const mk_pointer mk_default_mime = mk_pointer_init("text/plain\r\n");
 char conf_dir[MAX_PATH_LEN];

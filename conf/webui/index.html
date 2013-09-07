@@ -6,38 +6,49 @@
 
   <title>Monkey Cache UI</title>
 
-  <link rel="stylesheet" href="libs/bootstrap/bootstrap.min.css" media="screen">
-  <link rel="stylesheet" href="libs/bootstrap/bootstrap-theme.min.css">
+  <link rel="stylesheet" href="libs/bootstrap/bootstrap.css" media="screen">
 
   <script src="libs/angular/angular.min.js"></script>
   <script src="libs/angularui/bootstrap.js"></script>
   <script src="js/ctrls/main.js"></script>
   <script src="js/init.js"></script>
+
+  <style>
+    /* fix modal overflow on low resolutions */
+    .modal {
+      position: absolute;
+    }
+    @media (min-width: 980px) {
+      body {
+        padding-top: 60px;
+      }
+    }
+  </style>
 </head>
 
 <body ng-controller="MainCtrl">
-
-  <div class="navbar navbar-default">
+  <div class="navbar navbar-inverse navbar-fixed-top">
+    <div class="navbar-inner">
     <div class="container">
+      <!--  using a span for collapse rather than a to fix the angular majic on anchors -->
+      <span class="btn btn-navbar"
+        ng-click="collapsed = !collapsed">
 
-      <div class="navbar-header">
-        <!--
-        <button type="button" class="navbar-toggle" ng-click="collapsed = !collapsed">
-          <span class="icon-bar"></span>
-          <span class="icon-bar"></span>
-          <span class="icon-bar"></span>
-        </button>
-        -->
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span>
+      </span>
 
-        <a class="navbar-brand" href="#">Monkey Cache WebUI</a>
+      <a class="brand">Monkey Cache UI</a>
+
+      <div class="nav-collapse" collapse="collapsed">
+      <ul class="nav">
+        <li class="dropdown">
+          <a class="active" href="#">Home</a>
+        </li>
+      </ul>
       </div>
-
-      <div class="navbar-collapse" collapsed="collapsed">
-        <ul class="nav navbar-nav">
-          <li class="active"><a href="#">Home</a></li>
-        </ul>
-      </div>
-
+    </div>
     </div>
   </div>
 
