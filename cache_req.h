@@ -28,6 +28,11 @@ void cache_req_thread_init();
 void cache_req_exit();
 
 struct cache_req_t *cache_req_new();
+
+// fill in the curr pipe cache with contents of
+// the file mmap
+int cache_req_fill_curr(struct cache_req_t *);
+
 void cache_req_del(struct cache_req_t *);
 
 #endif

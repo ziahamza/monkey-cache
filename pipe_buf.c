@@ -64,6 +64,45 @@ void pipe_buf_flush(struct pipe_buf_t *buf) {
     mk_bug(buf->filled != 0);
 }
 
+int pipe_buf_vmsplice(struct pipe_buf_t *buf, void *mem, int len) {
+    int cnt = 0;
+    pthread_mutex_lock(&buf->write_mutex);
+    if (buf->cap - buf->filled  < len) {
+        mk_bug("destination pipe doesnt have enough space!");
+    }
+
+    struct iovec tmp = {
+        .iov_base = mem,
+        .iov_len = len
+    };
+
+    mk_bug(len < 0);
+
+    while (cnt < len) {
+
+        int ret = vmsplice(buf->pipe[1], &tmp, 1,
+            SPLICE_F_NONBLOCK | SPLICE_F_GIFT);
+
+        if (ret < 0) {
+            if (errno == EAGAIN) {
+                // opened file is blocking, exit out
+                return cnt;
+            }
+
+            perror(
+              "cannot vmsplice data form file cache to the "
+              "pipe buffer!\n");
+
+            return ret;
+        }
+        buf->filled += ret;
+        cnt += ret;
+    }
+
+    pthread_mutex_unlock(&buf->write_mutex);
+    return cnt;
+}
+
 struct pipe_buf_t *pipe_buf_new() {
     struct mk_list *pool = pthread_getspecific(pipe_buf_pool);
     struct pipe_buf_t *buf;

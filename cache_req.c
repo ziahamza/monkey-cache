@@ -47,6 +47,45 @@ struct cache_req_t *cache_req_new() {
     return req;
 }
 
+int cache_req_fill_curr(struct cache_req_t *req) {
+    struct pipe_buf_t *curr = req->curr;
+    struct cache_file_t *file = req->file;
+
+    // offset of the file before the start of filled cache
+    long off = req->bytes_offset + req->buf->filled;
+
+    // total amount of data that can be filled from file to cache
+    long len = curr->cap;
+
+    if (off + len > file->size) {
+        //  this should be the last portion of file
+        len = file->size - off;
+        /*
+        if (len > 0)
+            printf("hopefully the last portion of file "
+                "(namely %ld bytes) can be filled!\n",
+                len);
+        */
+    }
+
+    mk_bug(off > file->size);
+    mk_bug(len < 0);
+
+    if (curr->filled == len) return 0;
+
+    if (curr->filled < len) {
+
+        if (pipe_buf_vmsplice(curr, file->buf.data + curr->filled + off, len - curr->filled) < 0) {
+
+            printf("Tried to write from %ld (out of %ld) till "
+                "%ld\n", off, file->size, off + len);
+        }
+    }
+
+    // mk_bug(curr->filled > len);
+
+    return len - curr->filled;
+}
 
 void cache_req_del(struct cache_req_t *req) {
     mk_list_del(&req->_head);

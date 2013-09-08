@@ -25,6 +25,9 @@ void pipe_buf_exit();
 
 int pipe_buf_mem_used();
 
+// map userspace memory as pipe data
+int pipe_buf_vmsplice(struct pipe_buf_t *dest, void *mem, int len);
+
 struct pipe_buf_t *pipe_buf_new();
 void pipe_buf_flush(struct pipe_buf_t *);
 void pipe_buf_free(struct pipe_buf_t *);
