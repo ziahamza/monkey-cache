@@ -2,7 +2,7 @@
 
 void curr_reqs_init() {
 
-    struct mk_list *reqs = mk_api->mem_alloc(sizeof(struct mk_list));
+    struct mk_list *reqs = malloc(sizeof(struct mk_list));
     mk_list_init(reqs);
     pthread_setspecific(curr_reqs, reqs);
 }
@@ -37,5 +37,19 @@ void curr_reqs_del(int socket) {
             return;
         };
     }
+}
 
+void curr_reqs_exit() {
+    struct mk_list *reqs = pthread_getspecific(curr_reqs);
+    struct mk_list *curr, *next;
+
+    mk_list_foreach_safe(curr, next, reqs) {
+        struct cache_req_t *req = mk_list_entry(curr, struct cache_req_t, _head);
+        cache_req_del(req);
+    }
+
+    /*
+    free(reqs);
+    pthread_setspecific(curr_reqs, NULL);
+    */
 }

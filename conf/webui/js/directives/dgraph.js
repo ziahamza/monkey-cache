@@ -28,8 +28,9 @@ angular
         show: true
       },
       yaxis: {
-        show: true
-      }
+        show: true,
+        min: 0
+      },
     });
 
     var draw = function() {

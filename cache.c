@@ -3,8 +3,10 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 #include <sys/mman.h>
+#include <sys/time.h>
 
 #define __GNU_SOURCE
 #define __USE_GNU
@@ -18,6 +20,7 @@
 
 #include "ht.h"
 #include "utils.h"
+#include "mime_map.h"
 
 #include "pipe_buf.h"
 #include "cache_req.h"
@@ -31,22 +34,45 @@ MONKEY_PLUGIN("cache",         /* shortname */
               VERSION,        /* version */
               MK_PLUGIN_CORE_PRCTX | MK_PLUGIN_CORE_THCTX |  MK_PLUGIN_STAGE_30); /* hooks */
 
+// stats averaged over a second
+struct {
+    double avg_reqs_served;
+} stats;
+
+struct {
+    struct timeval start;
+    int valid;
+    int reqs_served;
+    pthread_mutex_t update_time;
+} cache_stats;
+
+void cache_stats_init() {
+    cache_stats.valid = 1;
+    cache_stats.reqs_served = 0;
+    gettimeofday(&cache_stats.start, NULL);
+    pthread_mutex_init(&cache_stats.update_time, NULL);
+}
+
+void cache_stats_update() {
+    struct timeval tmp;
+    int ms = 0;
+    gettimeofday(&tmp, NULL);
+
+    ms += (tmp.tv_sec - cache_stats.start.tv_sec) * 1000.0;
+    ms += (tmp.tv_usec - cache_stats.start.tv_usec) / 1000.0;
+    if (ms > 1000) {
+        cache_stats.start = tmp;
+        stats.avg_reqs_served = cache_stats.reqs_served / (ms / 1000.0);
+
+        cache_stats.reqs_served = 0;
+    }
+}
+
 char conf_dir[MAX_PATH_LEN];
 int conf_dir_len;
 
-#define MIME_MAX_LEN 128
-
-struct mime_map_t {
-    // file extention
-    char ext[MIME_MAX_LEN];
-
-    // actual mime
-    char mime[MIME_MAX_LEN];
-};
-
-struct buf_t mime_map;
-
 int _mkp_init(struct plugin_api **api, char *confdir) {
+    cache_stats_init();
     char config_path[MAX_PATH_LEN];
 
     mk_api = *api;
@@ -55,33 +81,22 @@ int _mkp_init(struct plugin_api **api, char *confdir) {
 
 
     snprintf(config_path, MAX_PATH_LEN, "%scache.conf", confdir);
+    config_path[MAX_PATH_LEN - 1] = '\0';
+
     struct mk_config *cnf = mk_api->config_create(config_path);
 
-    buf_init(&mime_map, sizeof(struct mime_map_t), 16);
-    struct mk_config_section *section = mk_api->config_section_get(cnf, "MIMETYPES");
-    struct mk_list *mime_head;
-    struct mk_config_entry *entry;
-
-    int i = 0;
-    struct mime_map_t tmp;
-    mk_list_foreach(mime_head, &section->entries) {
-        entry = mk_list_entry(mime_head, struct mk_config_entry, _head);
-
-        strncpy(tmp.ext, entry->key, MIME_MAX_LEN);
-        snprintf(tmp.mime, MIME_MAX_LEN, "%s\r\n", entry->val);
-        buf_push(&mime_map, &tmp);
-        i++;
-    }
+    mime_map_init(cnf);
 
     mk_api->config_free(cnf);
     return 0;
 }
 
 void _mkp_exit() {
-    // TODO: free curr_reqs
     cache_file_exit();
     pipe_buf_exit();
     cache_req_exit();
+    // TODO: free currest requests
+    // curr_reqs_exit();
 }
 
 int _mkp_core_prctx(struct server_config *config) {
@@ -351,32 +366,7 @@ int _mkp_event_write(int fd) {
     }
 }
 
-mk_pointer get_mime(char *path) {
-    const mk_pointer mime = mk_pointer_init("text/plain\r\n");
-    int i, j;
-
-    int len = strlen(path);
-    for (j = len; j > 0; j--) {
-        if (path[j - 1] != '.')
-            continue;
-
-        for (i = 0; i < mime_map.size; i++) {
-            struct mime_map_t *m = buf_get(&mime_map, i);
-            if (strcmp(path + j, m->ext) == 0) {
-                mk_pointer tmp = {
-                    .data = m->mime,
-                    .len = strlen(m->mime)
-                };
-
-                return tmp;
-            }
-        }
-        break;
-    }
-
-    return mime;
-}
-
+// TODO: Assuming headers are only filled once
 void fill_cache_headers(struct cache_file_t *file,
     struct client_session *cs, struct session_request *sr) {
     int ret = 0;
@@ -445,7 +435,7 @@ int serve_str(struct client_session *cs, struct session_request *sr, char *str) 
     mk_api->header_set_http_status(sr, MK_HTTP_OK);
 
     sr->headers.content_length = strlen(str);
-    sr->headers.content_type = get_mime(".txt");
+    sr->headers.content_type = mime_map_get(".txt");
 
     mk_api->header_send(cs->socket, cs, sr);
 
@@ -467,14 +457,19 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
 
     mk_api->header_set_http_status(sr, MK_HTTP_OK);
 
-    cJSON *root, *mem, *files, *file;
+    cJSON *root, *mem, *reqs, *files, *file;
     char *out;
 
     root = cJSON_CreateObject();
     cJSON_AddItemToObject(root, "memory", mem = cJSON_CreateObject());
+    cJSON_AddNumberToObject(mem,"pipe_size", PIPE_SIZE / (1024.0 * 1024.0));
+    cJSON_AddNumberToObject(mem,"pipe_mem_used", pipe_buf_mem_used() / (1024.0 * 1024.0));
+
+    cJSON_AddItemToObject(root, "requests", reqs = cJSON_CreateObject());
+    cJSON_AddNumberToObject(reqs, "served_per_sec", ceil(stats.avg_reqs_served));
+
+
     cJSON_AddItemToObject(root, "files", files = cJSON_CreateArray());
-    cJSON_AddNumberToObject(mem,"pipe_size", PIPE_SIZE);
-    cJSON_AddNumberToObject(mem,"pipe_mem_used", pipe_buf_mem_used());
 
     int i;
     struct node_t *node;
@@ -500,7 +495,7 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
 
 
     sr->headers.content_length = strlen(out);
-    sr->headers.content_type = get_mime(".json");
+    sr->headers.content_type = mime_map_get(".json");
 
     mk_api->header_send(cs->socket, cs, sr);
 
@@ -513,6 +508,7 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
     return MK_PLUGIN_RET_END;
 
 }
+
 int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
                   struct session_request *sr)
 {
@@ -525,6 +521,11 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
         //printf("got back an old request, continuing stage 30!\n");
         return MK_PLUGIN_RET_CONTINUE;
     }
+
+    pthread_mutex_lock(&cache_stats.update_time);
+    cache_stats_update();
+    cache_stats.reqs_served++;
+    pthread_mutex_unlock(&cache_stats.update_time);
 
     struct cache_file_t *file = NULL;
 
@@ -627,7 +628,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
         // sr->headers.last_modified = sr->file_info.last_modification;
         sr->headers.content_length = file->size;
         sr->headers.real_length = file->size;
-        sr->headers.content_type = get_mime(path);
+        sr->headers.content_type = mime_map_get(path);
         fill_cache_headers(file, cs, sr);
     }
 

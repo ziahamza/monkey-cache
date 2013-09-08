@@ -54,7 +54,6 @@ void pipe_buf_exit() {
 }
 
 void pipe_buf_flush(struct pipe_buf_t *buf) {
-    printf("flushing what ever is left of pipe: %d\n", buf->filled);
     int res = splice(buf->pipe[0], NULL, devnull, NULL, buf->filled, SPLICE_F_MOVE);
     if (res < 0) {
         perror("cannot flush pipe!!!\n");

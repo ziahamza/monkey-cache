@@ -59,15 +59,20 @@
 
   <div class="container">
 
-    <div val="memory.pipe_mem_used" label="'Memory used through pipes'" dgraph></div>
+    <h2>Requests Statistics</h2>
+    <div val="requests.served_per_sec" label="'Requests served per second'" dgraph></div>
+    <h2>Memory Statistics</h2>
+    <div val="memory.pipe_mem_used" label="'Memory consumed through pipes (in MB)'" dgraph></div>
 
-    <h2>Files:</h2>
+    <h2>Cached Files</h2>
     <ul>
       <li ng-repeat="file in files" class="row">
         <span class="span9">{{file.uri}} (Size: {{file.size}})</span>
         <button class="btn btn-danger span3" ng-click="reset(file.uri)">Reset File</button>
       </li>
     </ul>
+
+    <h2>Raw API</h2>
     <pre>{{api}}</pre>
   </div>
 </body>

@@ -16,7 +16,12 @@
 // size of a single pipe
 #define PIPE_SIZE 512 * 1024
 
-#define PIPE_BUF_POOL_MAX 0
-#define CACHE_REQ_POOL_MAX 0
+// decrease both down till zero to minimum
+
+// memory consumption
+#define PIPE_BUF_POOL_MAX 16
+// although, cache req pool will only contain
+// one pool item under any load ?!
+#define CACHE_REQ_POOL_MAX 16
 
 #endif

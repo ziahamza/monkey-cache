@@ -5,6 +5,10 @@ angular
     $scope.memory = {
       pipe_mem_used: 0
     };
+
+    $scope.requests = {
+      served_per_sec: 0
+    }
     $scope.reset = function(uri) {
       $http.get('/cache/reset' + uri).success(function(data) {
         console.log(data);
@@ -20,6 +24,7 @@ angular
         $scope.api = json;
         $scope.files = data.files;
         $scope.memory = data.memory;
+        $scope.requests = data.requests;
         setTimeout(updateApi, 1000);
       });
     })();

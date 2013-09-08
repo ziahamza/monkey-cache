@@ -155,8 +155,6 @@ struct cache_file_t *cache_file_new(const char *path, const char *uri) {
     file = table_get(file_table, uri);
 
     if (!file) {
-        printf("creating a new file cache with path %s and uri %s\n",
-            path, uri);
         int fd = open(path, O_RDONLY | O_NONBLOCK);
         if (fd == -1) {
             perror("cannot open the file!");
