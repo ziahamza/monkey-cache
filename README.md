@@ -31,6 +31,7 @@ Cache plugin exposes a json api to monitor the plugin.
 To view statistics:
 make a GET request to /cache/stats. e.g to dump the
 statictics using curl, do the following:
+
     # ./bin/monkey
     curl localhost:2001/cache/stats
 
@@ -43,6 +44,7 @@ Note that to remove the overlayed resource over an existing file url, just reset
 that cache url and the original file would be served in the next request.
 
 e.g. to cache a temporary resource, and to remove it using curl, do the following:
+
     # ./bin/monkey
     # following will add a new file with contents 'hello world' with url /first/file
     curl -d ‘hello world’ localhost:2001/cache/add/first/file
