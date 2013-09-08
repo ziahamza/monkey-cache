@@ -16,7 +16,6 @@ void mime_map_init(struct mk_config *cnf) {
         snprintf(tmp.mime, MIME_MAX_LEN, "%s\r\n", entry->val);
         buf_push(&mime_map, &tmp);
     }
-
 }
 
 mk_pointer mime_map_get(char *path) {

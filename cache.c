@@ -462,6 +462,8 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
 
     root = cJSON_CreateObject();
     cJSON_AddItemToObject(root, "memory", mem = cJSON_CreateObject());
+
+    // size converted to MB
     cJSON_AddNumberToObject(mem,"pipe_size", PIPE_SIZE / (1024.0 * 1024.0));
     cJSON_AddNumberToObject(mem,"pipe_mem_used", pipe_buf_mem_used() / (1024.0 * 1024.0));
 
@@ -614,6 +616,8 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     req->bytes_to_send = file->size;
 
     req->file = file;
+    __sync_fetch_and_add(&req->file->pending_reqs, 1);
+
     req->curr = mk_list_entry_first(&file->cache,
         struct pipe_buf_t, _head);
 

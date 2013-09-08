@@ -76,6 +76,5 @@ angular
     elem.bind('$destroy', function() {
       clearInterval(interval);
     });
-
   };
 }]);

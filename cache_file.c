@@ -54,8 +54,12 @@ struct cache_file_t *cache_file_get(const char *uri) {
 void cache_file_reset(const char *uri) {
     pthread_mutex_lock(&table_mutex);
     struct cache_file_t *file = table_del(file_table, uri);
+    if (file) {
+        file->zombie = 1;
+        if (file->pending_reqs == 0)
+            cache_file_free(file);
+    }
     pthread_mutex_unlock(&table_mutex);
-    cache_file_free(file);
     return;
 }
 
@@ -66,7 +70,11 @@ struct cache_file_t *cache_file_tmp(const char *uri, mk_pointer *ptr) {
 
     // Cant use reset_file as it locks the table mutex!
     file = table_del(file_table, uri);
-    cache_file_free(file);
+    if (file) {
+        file->zombie = 1;
+        if (file->pending_reqs == 0)
+            cache_file_free(file);
+    }
 
     mk_bug(cache_file_get(uri) != NULL);
 
@@ -199,6 +207,8 @@ struct cache_file_t *cache_file_new(const char *path, const char *uri) {
             len -= tmp->cap;
         }
 
+        file->zombie = 0;
+        file->pending_reqs = 0;
         table_add(file_table, file->uri, file);
     }
     pthread_mutex_unlock(&table_mutex);

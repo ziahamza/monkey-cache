@@ -34,6 +34,12 @@ struct cache_file_t {
 
     // length of the headers, rest is file contents
     long header_len;
+
+    // file is zombie when it is removed from files table, but some pending
+    // requests still need it, when they go to zero, it is freed and went to
+    // heaven
+    int zombie;
+    int pending_reqs;
 };
 
 void cache_file_process_init();

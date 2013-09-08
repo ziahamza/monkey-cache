@@ -1,6 +1,7 @@
 /* vim: set tabstop=4 shiftwidth=4 softtabstop=4 expandtab: */
 
 #include "cache_req.h"
+#include "cache_file.h"
 #include "pipe_buf.h"
 #include <utils.h>
 
@@ -50,6 +51,11 @@ struct cache_req_t *cache_req_new() {
 void cache_req_del(struct cache_req_t *req) {
     mk_list_del(&req->_head);
 
+    __sync_fetch_and_add(&req->file->pending_reqs, -1);
+
+    if (req->file->zombie && req->file->pending_reqs == 0) {
+        cache_file_free(req->file);
+    }
     struct mk_list *pool = pthread_getspecific(cache_req_pool);
 
     if (mk_list_len(pool) < CACHE_REQ_POOL_MAX) {
