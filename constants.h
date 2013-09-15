@@ -22,6 +22,6 @@
 #define PIPE_BUF_POOL_MAX 16
 // although, cache req pool will only contain
 // one pool item under any load ?!
-#define CACHE_REQ_POOL_MAX 16
+#define CACHE_REQ_POOL_MAX 32
 
 #endif
