@@ -192,68 +192,70 @@ int _mkp_event_write(int fd) {
 void fill_cache_headers(struct cache_file_t *file,
     struct client_session *cs, struct session_request *sr) {
     int ret = 0;
-    pthread_mutex_lock(&file->cache_headers->write_mutex);
-    if (!file->cache_headers->filled) {
+    if (pthread_mutex_trylock(&file->cache_headers->write_mutex) == 0) {
+        if (!file->cache_headers->filled) {
 
-        // HACK: change server request values to prevent monkey to
-        // not add "connection: close" in any case as it messes up things
-        // when served every request with same cached headers.
-        int old_conn = sr->headers.connection,
-            old_keepalive = sr->keep_alive,
-            old_close = sr->close_now,
-            old_conlen = sr->connection.len;
+            // HACK: change server request values to prevent monkey to
+            // not add "connection: close" in any case as it messes up things
+            // when served every request with same cached headers.
+            int old_conn = sr->headers.connection,
+                old_keepalive = sr->keep_alive,
+                old_close = sr->close_now,
+                old_conlen = sr->connection.len;
 
-        sr->headers.connection= 0;
-        sr->keep_alive = MK_TRUE;
-        sr->close_now = MK_FALSE;
+            sr->headers.connection= 0;
+            sr->keep_alive = MK_TRUE;
+            sr->close_now = MK_FALSE;
 
-        if (sr->connection.len == 0) sr->connection.len = 1;
+            if (sr->connection.len == 0) sr->connection.len = 1;
 
-        mk_api->header_send(file->cache_headers->pipe[1], cs, sr);
+            mk_api->header_send(file->cache_headers->pipe[1], cs, sr);
 
-        if (ioctl(file->cache_headers->pipe[0], FIONREAD,
-              &file->header_len) != 0) {
-            perror("cannot find size of pipe buf!");
-            mk_bug(1);
+            if (ioctl(file->cache_headers->pipe[0], FIONREAD,
+                  &file->header_len) != 0) {
+                perror("cannot find size of pipe buf!");
+                mk_bug(1);
+            }
+
+            // restoring modified server request values
+            sr->headers.connection = old_conn;
+            sr->keep_alive = old_keepalive;
+            sr->close_now = old_close;
+            sr->connection.len = old_conlen;
+
+            file->cache_headers->filled = file->header_len;
+            // fill in the empty header pipe space with some initial file
+            // data to send them in a single tee syscall, only in case
+            // there is enough room which would be true for small files
+            // which fit inside a pipe
+            int leftover =
+              file->cache_headers->cap - file->cache_headers->filled;
+
+            struct pipe_buf_t *first_buf = mk_list_entry_first(&file->cache,
+                    struct pipe_buf_t, _head);
+
+            if (leftover > first_buf->filled) {
+               if (first_buf->filled) {
+                  ret = tee(first_buf->pipe[0],
+                    file->cache_headers->pipe[1], leftover,
+                    SPLICE_F_NONBLOCK);
+
+                  mk_bug(ret <= 0);
+
+                  file->cache_headers->filled += ret;
+               }
+            }
+            else {
+                // file too big to compltely fit in the header pipe
+                // along with the rest of the headers
+            }
+
+            mk_bug(file->cache_headers->filled == 0);
         }
-
-        // restoring modified server request values
-        sr->headers.connection = old_conn;
-        sr->keep_alive = old_keepalive;
-        sr->close_now = old_close;
-        sr->connection.len = old_conlen;
-
-        file->cache_headers->filled = file->header_len;
-        // fill in the empty header pipe space with some initial file
-        // data to send them in a single tee syscall, only in case
-        // there is enough room which would be true for small files
-        // which fit inside a pipe
-        int leftover =
-          file->cache_headers->cap - file->cache_headers->filled;
-
-        struct pipe_buf_t *first_buf = mk_list_entry_first(&file->cache,
-                struct pipe_buf_t, _head);
-
-        if (leftover > first_buf->filled) {
-           if (first_buf->filled) {
-              ret = tee(first_buf->pipe[0],
-                file->cache_headers->pipe[1], leftover,
-                SPLICE_F_NONBLOCK);
-
-              mk_bug(ret <= 0);
-
-              file->cache_headers->filled += ret;
-           }
-        }
-        else {
-            // file too big to compltely fit in the header pipe
-            // along with the rest of the headers
-        }
-
-        mk_bug(file->cache_headers->filled == 0);
+        pthread_mutex_unlock(&file->cache_headers->write_mutex);
     }
-    pthread_mutex_unlock(&file->cache_headers->write_mutex);
 }
+
 
 
 int serve_str(struct client_session *cs, struct session_request *sr, char *str) {
@@ -464,7 +466,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
     }
 
     PLUGIN_TRACE("conn done: %d", config->max_keep_alive_request - cs->counter_connections);
-    if ((config->max_keep_alive_request - cs->counter_connections) <= 0) {
+    if (!file->cache_headers->filled || (config->max_keep_alive_request - cs->counter_connections) <= 0) {
         mk_api->header_send(cs->socket, cs, sr);
     }
     else {
