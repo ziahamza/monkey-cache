@@ -5,6 +5,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include "MKPlugin.h"
 
 struct buf_t {
@@ -41,6 +42,8 @@ void *buf_set(struct buf_t *buf, int index, const void *);
 
 
 int mk_list_len(struct mk_list *);
+
+int get_time_diff_ms(struct timeval, struct timeval);
 
 
 #endif

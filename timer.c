@@ -4,6 +4,7 @@
 #include "timer.h"
 
 #include "cache_stats.h"
+#include "cache_file.h"
 
 int timer_fd;
 
@@ -22,6 +23,7 @@ void timer_read() {
     if ((cnt = read(timer_fd, time, 8)) == 8) {
         // handle interval tasks!
         cache_stats_tick();
+        cache_file_tick();
     }
 }
 

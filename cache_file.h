@@ -32,6 +32,14 @@ struct cache_file_t {
     // header len is the length of the headers in the pipe
     struct pipe_buf_t *cache_headers;
 
+    // tells weather file can be evicted from cache in case of no usage,
+    // not the case when its a custom buffer through the api
+    int evictable;
+
+    // the last time file was requested by a user
+    struct timeval last_accessed;
+
+
     // length of the headers, rest is file contents
     long header_len;
 
@@ -52,5 +60,8 @@ struct cache_file_t *cache_file_get(const char *);
 void cache_file_reset(const char *);
 struct cache_file_t *cache_file_tmp(const char *, mk_pointer *);
 struct cache_file_t *cache_file_new(const char *, const char *);
+
+// called after every interval, evicts old caches
+void cache_file_tick();
 
 #endif

@@ -13,15 +13,17 @@
 #define MAX_PATH_LEN 1024
 #define MAX_URI_LEN 512
 
+
 // size of a single pipe
 #define PIPE_SIZE 512 * 1024
 
-// decrease both down till zero to minimum
+// max idle time for an *evictable* file after which
+// it would be deleted from the cache
+#define MAX_FILE_IDLE 5000
 
-// memory consumption
+// decrease both down till zero for minimum memory consumption
 #define PIPE_BUF_POOL_MAX 16
-// although, cache req pool will only contain
-// one pool item under any load ?!
+
 #define CACHE_REQ_POOL_MAX 32
 
 #endif

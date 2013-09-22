@@ -3,6 +3,7 @@
 #include <sys/time.h>
 #include "MKPlugin.h"
 #include "cache_stats.h"
+#include "utils.h"
 
 // to initialize the thread stats properly
 pthread_mutex_t cache_thread_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -38,11 +39,10 @@ void cache_stats_thread_init() {
 
 void cache_stats_thread_process(struct cache_stats_thread *stats) {
     struct timeval tmp;
-    int ms = 0;
+
     gettimeofday(&tmp, NULL);
 
-    ms += (tmp.tv_sec - stats->start.tv_sec) * 1000.0;
-    ms += (tmp.tv_usec - stats->start.tv_usec) / 1000.0;
+    int ms = get_time_diff_ms(stats->start, tmp);
     if (ms > 1000) {
         stats->start = tmp;
         stats->reqs_per_sec = stats->reqs_served / (ms / 1000.0);

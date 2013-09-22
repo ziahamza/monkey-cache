@@ -5,12 +5,14 @@
 #include <math.h>
 
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <fcntl.h>
 
 #include "MKPlugin.h"
 
 #include "cache_file.h"
 #include "pipe_buf.h"
+#include "utils.h"
 
 #include "constants.h"
 
@@ -49,7 +51,11 @@ void cache_file_free(struct cache_file_t *file) {
 }
 
 struct cache_file_t *cache_file_get(const char *uri) {
-    return table_get(file_table, uri);
+    struct cache_file_t *file = table_get(file_table, uri);
+    if (file) {
+        gettimeofday(&file->last_accessed, NULL);
+    }
+    return file;
 }
 
 // need to lock table_mutex before called, should use
@@ -68,6 +74,39 @@ void cache_file_reset(const char *uri) {
     file_table_reset(uri);
     pthread_mutex_unlock(&table_mutex);
     return;
+}
+
+// cleanup unused files
+void cache_file_tick() {
+    pthread_mutex_lock(&table_mutex);
+
+    struct cache_file_t *file;
+    struct node_t *node;
+    for (int i = 0; i < file_table->size; i++) {
+        struct node_t *next = node;
+        for (
+            node = file_table->store[i];
+            node != NULL;
+            node = next
+        ) {
+            next = node->next;
+
+            file = node->val;
+
+            struct timeval tmp;
+            gettimeofday(&tmp, NULL);
+
+            int ms = get_time_diff_ms(file->last_accessed, tmp);
+
+            // evict the file in case its 5 secs old
+            if (ms > MAX_FILE_IDLE && file->evictable) {
+                printf("evicting url: %s\n", file->uri);
+                file_table_reset(file->uri);
+            }
+        }
+    }
+
+    pthread_mutex_unlock(&table_mutex);
 }
 
 struct cache_file_t *cache_file_tmp(const char *uri, mk_pointer *ptr) {
@@ -126,6 +165,10 @@ struct cache_file_t *cache_file_tmp(const char *uri, mk_pointer *ptr) {
     file->buf.data = mmap_ptr;
     file->buf.len = mmap_len;
 
+    // do not want this file to be evicted, as that would
+    // incur data loss
+    file->evictable = 0;
+
 
     file->cache_headers = pipe_buf_new();
     file->header_len = 0;
@@ -141,6 +184,7 @@ struct cache_file_t *cache_file_tmp(const char *uri, mk_pointer *ptr) {
         len -= tmp->cap;
     }
 
+    gettimeofday(&file->last_accessed, NULL);
     table_add(file_table, file->uri, file);
 
     pthread_mutex_unlock(&table_mutex);
@@ -210,6 +254,11 @@ struct cache_file_t *cache_file_new(const char *path, const char *uri) {
 
         file->zombie = 0;
         file->pending_reqs = 0;
+
+
+        file->evictable = 1;
+
+        gettimeofday(&file->last_accessed, NULL);
         table_add(file_table, file->uri, file);
     }
     pthread_mutex_unlock(&table_mutex);

@@ -5,6 +5,14 @@
 
 #include "utils.h"
 
+int get_time_diff_ms(struct timeval start, struct timeval end) {
+    int ms = 0;
+
+    ms += (end.tv_sec - start.tv_sec) * 1000.0;
+    ms += (end.tv_usec - start.tv_usec) / 1000.0;
+
+    return ms;
+}
 void buf_init(struct buf_t *buf, int value_size, int init_size) {
     buf->cap = init_size;
     buf->value_size = value_size;
