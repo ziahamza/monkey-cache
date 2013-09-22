@@ -3,6 +3,8 @@
 #include <sys/timerfd.h>
 #include "timer.h"
 
+#include "cache_stats.h"
+
 int timer_fd;
 
 int timer_get_fd() {
@@ -11,13 +13,15 @@ int timer_get_fd() {
 
 void timer_thread_init() {
     int epoll_fd = mk_api->sched_worker_info()->epoll_fd;
-    mk_api->epoll_add(epoll_fd, timer_fd, MK_EPOLL_READ, MK_EPOLL_LEVEL_TRIGGERED);
+    mk_api->epoll_add(epoll_fd, timer_fd, MK_EPOLL_READ, MK_EPOLL_EDGE_TRIGGERED);
 }
 
 void timer_read() {
     char time[8];
-    if (read(timer_fd, time, 8) == 8) {
+    int cnt = 0;
+    if ((cnt = read(timer_fd, time, 8)) == 8) {
         // handle interval tasks!
+        // cache_stats_tick();
     }
 }
 

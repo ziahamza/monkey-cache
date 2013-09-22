@@ -1,6 +1,5 @@
 /* vim: set tabstop=4 shiftwidth=4 softtabstop=4 expandtab: */
 
-
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -13,7 +12,6 @@
 
 #include <fcntl.h>
 #include <sys/ioctl.h>
-
 
 #include "MKPlugin.h"
 #include "cJSON.h"
@@ -28,6 +26,7 @@
 #include "cache_req.h"
 #include "curr_reqs.h"
 #include "cache_file.h"
+#include "cache_stats.h"
 
 #include "constants.h"
 
@@ -36,45 +35,11 @@ MONKEY_PLUGIN("cache",         /* shortname */
               VERSION,        /* version */
               MK_PLUGIN_CORE_PRCTX | MK_PLUGIN_CORE_THCTX |  MK_PLUGIN_STAGE_30); /* hooks */
 
-// stats averaged over a second
-struct {
-    double avg_reqs_served;
-} stats;
-
-struct {
-    struct timeval start;
-    int valid;
-    int reqs_served;
-    pthread_mutex_t update_time;
-} cache_stats;
-
-void cache_stats_init() {
-    cache_stats.valid = 1;
-    cache_stats.reqs_served = 0;
-    gettimeofday(&cache_stats.start, NULL);
-    pthread_mutex_init(&cache_stats.update_time, NULL);
-}
-
-void cache_stats_update() {
-    struct timeval tmp;
-    int ms = 0;
-    gettimeofday(&tmp, NULL);
-
-    ms += (tmp.tv_sec - cache_stats.start.tv_sec) * 1000.0;
-    ms += (tmp.tv_usec - cache_stats.start.tv_usec) / 1000.0;
-    if (ms > 1000) {
-        cache_stats.start = tmp;
-        stats.avg_reqs_served = cache_stats.reqs_served / (ms / 1000.0);
-
-        cache_stats.reqs_served = 0;
-    }
-}
 
 char conf_dir[MAX_PATH_LEN];
 int conf_dir_len;
 
 int _mkp_init(struct plugin_api **api, char *confdir) {
-    cache_stats_init();
     char config_path[MAX_PATH_LEN];
 
     mk_api = *api;
@@ -94,10 +59,10 @@ int _mkp_init(struct plugin_api **api, char *confdir) {
 }
 
 void _mkp_exit() {
-    cache_file_exit();
     pipe_buf_exit();
     cache_req_exit();
     // TODO: free currest requests
+    // cache_file_exit();
     // curr_reqs_exit();
 }
 
@@ -112,6 +77,7 @@ int _mkp_core_prctx(struct server_config *conf) {
     pipe_buf_process_init();
     cache_file_process_init();
     timer_process_init();
+    cache_stats_process_init();
 
     config = conf;
     return 0;
@@ -124,6 +90,7 @@ void _mkp_core_thctx() {
     pipe_buf_thread_init();
     cache_file_thread_init();
     timer_thread_init();
+    // cache_stats_thread_init();
 
 }
 
@@ -161,7 +128,6 @@ int serve_req(struct cache_req_t *req) {
 int _mkp_event_read(int fd) {
     if (fd == timer_get_fd()) {
         timer_read();
-        return MK_PLUGIN_RET_EVENT_CONTINUE;
     }
 
     return MK_PLUGIN_RET_EVENT_NEXT;
@@ -306,7 +272,7 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
     cJSON_AddNumberToObject(mem,"pipe_mem_used", pipe_buf_mem_used() / (1024.0 * 1024.0));
 
     cJSON_AddItemToObject(root, "requests", reqs = cJSON_CreateObject());
-    cJSON_AddNumberToObject(reqs, "served_per_sec", ceil(stats.avg_reqs_served));
+    cJSON_AddNumberToObject(reqs, "served_per_sec", ceil(cache_stats.reqs_per_sec));
 
 
     cJSON_AddItemToObject(root, "files", files = cJSON_CreateArray());
@@ -362,10 +328,7 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
         return MK_PLUGIN_RET_CONTINUE;
     }
 
-    pthread_mutex_lock(&cache_stats.update_time);
-    cache_stats_update();
-    cache_stats.reqs_served++;
-    pthread_mutex_unlock(&cache_stats.update_time);
+    cache_stats_req_new();
 
     struct cache_file_t *file = NULL;
 

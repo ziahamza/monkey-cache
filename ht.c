@@ -32,7 +32,7 @@ void table_free(struct table_t *table) {
   struct node_t *node;
   int i;
   for (i = 0; i < table->size; i++) {
-    struct node_t *next;
+    struct node_t *next = node;
     for (
       node = table->store[i];
       node != NULL;

@@ -105,7 +105,7 @@ int pipe_buf_vmsplice(struct pipe_buf_t *buf, void *mem, int len) {
 
 struct pipe_buf_t *pipe_buf_new() {
     struct mk_list *pool = pthread_getspecific(pipe_buf_pool);
-    struct pipe_buf_t *buf = NULL;
+    struct pipe_buf_t *buf;
     if (mk_list_is_empty(pool) == -1) {
         buf = mk_list_entry_first(pool, struct pipe_buf_t, _head);
         mk_list_del(&buf->_head);

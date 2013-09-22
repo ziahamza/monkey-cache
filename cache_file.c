@@ -21,6 +21,7 @@ void cache_file_thread_init() {
 }
 
 void cache_file_exit() {
+
     table_free(file_table);
 }
 void cache_file_free(struct cache_file_t *file) {
