@@ -11,8 +11,14 @@
 
 #include "constants.h"
 
+pthread_key_t pipe_buf_pool;
 int devnull;
 int pipe_mem_used = 0;
+
+void pipe_buf_process_init() {
+    devnull = open("/dev/null", O_WRONLY);
+    pthread_key_create(&pipe_buf_pool, NULL);
+}
 int createpipe(int *fds) {
     if (pipe2(fds, O_NONBLOCK | O_CLOEXEC) < 0) {
         perror("cannot create a pipe!");
@@ -37,9 +43,6 @@ void closepipe(int *fds) {
     __sync_fetch_and_add(&pipe_mem_used, -PIPE_SIZE);
 }
 
-void pipe_buf_process_init() {
-    devnull = open("/dev/null", O_WRONLY);
-}
 int pipe_buf_mem_used() {
     return pipe_mem_used;
 }

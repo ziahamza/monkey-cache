@@ -4,7 +4,6 @@
 #include "MKPlugin.h"
 #include "cache_req.h"
 
-pthread_key_t curr_reqs;
 void curr_reqs_process_init();
 void curr_reqs_thread_init();
 void curr_reqs_exit();

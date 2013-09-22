@@ -5,8 +5,6 @@
 
 #include "MKPlugin.h"
 
-pthread_key_t cache_req_pool;
-
 struct cache_req_t {
     int socket;
 

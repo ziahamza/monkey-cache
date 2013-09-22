@@ -7,6 +7,7 @@
 
 #include "constants.h"
 
+pthread_key_t cache_req_pool;
 void cache_req_process_init() {
     pthread_key_create(&cache_req_pool, NULL);
 }

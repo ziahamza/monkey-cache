@@ -7,8 +7,6 @@
 
 #include "MKPlugin.h"
 
-pthread_key_t pipe_buf_pool;
-
 struct pipe_buf_t {
     int pipe[2];
     int filled;     // amount of data filled in pipe

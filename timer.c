@@ -21,7 +21,7 @@ void timer_read() {
     int cnt = 0;
     if ((cnt = read(timer_fd, time, 8)) == 8) {
         // handle interval tasks!
-        // cache_stats_tick();
+        cache_stats_tick();
     }
 }
 

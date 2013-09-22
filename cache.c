@@ -84,13 +84,12 @@ int _mkp_core_prctx(struct server_config *conf) {
 }
 
 void _mkp_core_thctx() {
-
+    cache_stats_thread_init();
     curr_reqs_thread_init();
     cache_req_thread_init();
-    pipe_buf_thread_init();
     cache_file_thread_init();
     timer_thread_init();
-    // cache_stats_thread_init();
+    pipe_buf_thread_init();
 
 }
 
@@ -128,6 +127,7 @@ int serve_req(struct cache_req_t *req) {
 int _mkp_event_read(int fd) {
     if (fd == timer_get_fd()) {
         timer_read();
+        return MK_PLUGIN_RET_EVENT_OWNED;
     }
 
     return MK_PLUGIN_RET_EVENT_NEXT;

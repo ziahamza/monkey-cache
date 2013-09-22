@@ -1,5 +1,5 @@
 #include "curr_reqs.h"
-
+pthread_key_t curr_reqs;
 void curr_reqs_process_init() {
     pthread_key_create(&curr_reqs, NULL);
 }
