@@ -104,7 +104,7 @@ void serve_cache_headers(struct cache_req_t *req) {
 
     if (ret < req->file->header_len) {
 
-        printf("teed %d data instead of headers len %ld\n", ret, req->file->header_len);
+        PLUGIN_TRACE("teed %d data instead of headers len %ld\n", ret, req->file->header_len);
         mk_bug(ret < req->file->header_len);
     }
 
@@ -136,10 +136,8 @@ int _mkp_event_read(int fd) {
 int _mkp_event_write(int fd) {
     struct cache_req_t *req = curr_reqs_get(fd);
     if (!req) {
-        //mk_info("write event, but not of our request");
         return MK_PLUGIN_RET_EVENT_NEXT;
     }
-    //printf("handling write event for our request!\n");
     if (req->bytes_to_send <= 0) {
         mk_info("no data to send, returning event_write!");
         return MK_PLUGIN_RET_EVENT_CLOSE;
@@ -153,12 +151,10 @@ int _mkp_event_write(int fd) {
         curr_reqs_del(fd);
 
         mk_api->http_request_end(fd);
-        //printf("dont with the request, ending it!\n");
 
         return MK_PLUGIN_RET_EVENT_OWNED;
     }
     else {
-        //printf("send some data, calling the stages again!\n");
 
         return MK_PLUGIN_RET_EVENT_CONTINUE;
     }
@@ -307,7 +303,6 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
 
     mk_api->socket_send(cs->socket, out, strlen(out));
 
-    // printf("got a call for the api!\n");
 
     cJSON_Delete(root);
     free(out);
@@ -324,7 +319,6 @@ int _mkp_stage_30(struct plugin *plugin, struct client_session *cs,
 
     struct cache_req_t *req = curr_reqs_get(cs->socket);
     if (req) {
-        //printf("got back an old request, continuing stage 30!\n");
         return MK_PLUGIN_RET_CONTINUE;
     }
 

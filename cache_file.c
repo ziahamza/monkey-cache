@@ -100,7 +100,7 @@ void cache_file_tick() {
 
             // evict the file in case its 5 secs old
             if (ms > MAX_FILE_IDLE && file->evictable) {
-                printf("evicting url: %s\n", file->uri);
+                PLUGIN_TRACE("evicting url: %s\n", file->uri);
                 file_table_reset(file->uri);
             }
         }
