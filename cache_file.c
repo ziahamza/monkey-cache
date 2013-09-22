@@ -78,8 +78,6 @@ void cache_file_reset(const char *uri) {
 
 // cleanup unused files
 void cache_file_tick() {
-    pthread_mutex_lock(&table_mutex);
-
     struct cache_file_t *file;
     struct node_t *node;
     for (int i = 0; i < file_table->size; i++) {
@@ -101,12 +99,10 @@ void cache_file_tick() {
             // evict the file in case its 5 secs old
             if (ms > MAX_FILE_IDLE && file->evictable) {
                 PLUGIN_TRACE("evicting url: %s\n", file->uri);
-                file_table_reset(file->uri);
+                cache_file_reset(file->uri);
             }
         }
     }
-
-    pthread_mutex_unlock(&table_mutex);
 }
 
 struct cache_file_t *cache_file_tmp(const char *uri, mk_pointer *ptr) {
