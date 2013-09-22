@@ -1,6 +1,9 @@
 #include "curr_reqs.h"
 
-void curr_reqs_init() {
+void curr_reqs_process_init() {
+    pthread_key_create(&curr_reqs, NULL);
+}
+void curr_reqs_thread_init() {
 
     struct mk_list *reqs = malloc(sizeof(struct mk_list));
     mk_list_init(reqs);

@@ -18,6 +18,7 @@
 #include "MKPlugin.h"
 #include "cJSON.h"
 
+#include "timer.h"
 #include "ht.h"
 #include "utils.h"
 #include "socket.h"
@@ -101,24 +102,29 @@ void _mkp_exit() {
 }
 
 struct server_config *config;
+
 int _mkp_core_prctx(struct server_config *conf) {
 
     mk_info("Started Monkey Cache plugin");
-    pthread_key_create(&curr_reqs, NULL);
 
+    curr_reqs_process_init();
     cache_req_process_init();
     pipe_buf_process_init();
     cache_file_process_init();
+    timer_process_init();
 
     config = conf;
     return 0;
 }
+
 void _mkp_core_thctx() {
 
-    curr_reqs_init();
+    curr_reqs_thread_init();
     cache_req_thread_init();
     pipe_buf_thread_init();
     cache_file_thread_init();
+    timer_thread_init();
+
 }
 
 void serve_cache_headers(struct cache_req_t *req) {
@@ -153,8 +159,12 @@ int serve_req(struct cache_req_t *req) {
 }
 
 int _mkp_event_read(int fd) {
-    (void) fd;
-    return MK_PLUGIN_RET_EVENT_CONTINUE;
+    if (fd == timer_get_fd()) {
+        timer_read();
+        return MK_PLUGIN_RET_EVENT_CONTINUE;
+    }
+
+    return MK_PLUGIN_RET_EVENT_NEXT;
 }
 
 int _mkp_event_write(int fd) {
