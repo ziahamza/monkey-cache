@@ -17,14 +17,15 @@
 #include "constants.h"
 
 void cache_file_process_init() {}
+
 void cache_file_thread_init() {
     file_table = table_alloc();
 }
 
 void cache_file_exit() {
-
     table_free(file_table);
 }
+
 void cache_file_free(struct cache_file_t *file) {
     if (!file) {
         return;
