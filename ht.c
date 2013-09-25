@@ -6,6 +6,21 @@
 
 #define HT_MIN_SIZE 8192
 
+struct node_t {
+  // provided by the caller
+  const char *key;
+  void *val;
+
+  struct node_t *next;
+};
+
+struct table_t {
+  struct node_t **store;
+  int size;
+};
+
+
+
 // see: http://stackoverflow.com/questions/2351087/what-is-the-best-32bit-hash-function-for-short-strings-tag-names
 size_t key_hash(const char *key, size_t max) {
   unsigned int h;
@@ -45,6 +60,23 @@ void table_free(struct table_t *table) {
 
   free(table->store);
   free(table);
+}
+
+void *table_each(struct table_t *table, table_cb_t cb, void *state) {
+    struct node_t *node;
+    for (int i = 0; i < table->size; i++) {
+        struct node_t *next;
+        for (
+          node = table->store[i];
+          node != NULL;
+          node = next
+        ) {
+            next = node->next;
+            state = cb(node->key, node->val, state);
+        }
+    }
+
+    return state;
 }
 
 void * table_get(struct table_t *table, const char *key) {

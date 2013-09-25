@@ -76,33 +76,25 @@ void cache_file_reset(const char *uri) {
     return;
 }
 
+void *cache_file_tick_cb(const char *key, void *val, void *state) {
+    (void) key;
+    struct cache_file_t *file = val;
+    struct timeval tmp;
+    gettimeofday(&tmp, NULL);
+
+    int ms = get_time_diff_ms(file->last_accessed, tmp);
+
+    // evict the file in case its 5 secs old
+    if (ms > MAX_FILE_IDLE && file->evictable) {
+        PLUGIN_TRACE("evicting url: %s\n", file->uri);
+        cache_file_reset(file->uri);
+    }
+
+    return state;
+}
 // cleanup unused files
 void cache_file_tick() {
-    struct cache_file_t *file;
-    struct node_t *node;
-    for (int i = 0; i < file_table->size; i++) {
-        struct node_t *next = node;
-        for (
-            node = file_table->store[i];
-            node != NULL;
-            node = next
-        ) {
-            next = node->next;
-
-            file = node->val;
-
-            struct timeval tmp;
-            gettimeofday(&tmp, NULL);
-
-            int ms = get_time_diff_ms(file->last_accessed, tmp);
-
-            // evict the file in case its 5 secs old
-            if (ms > MAX_FILE_IDLE && file->evictable) {
-                PLUGIN_TRACE("evicting url: %s\n", file->uri);
-                cache_file_reset(file->uri);
-            }
-        }
-    }
+    table_each(file_table, cache_file_tick_cb, NULL);
 }
 
 struct cache_file_t *cache_file_tmp(const char *uri, mk_pointer *ptr) {

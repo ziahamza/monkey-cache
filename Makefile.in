@@ -6,12 +6,13 @@ CC_QUIET= @echo -n; $CC
 CFLAGS	= $CFLAGS
 LDFLAGS = $LDFLAGS
 DEFS    = $DEFS
-CACHE_OBJECTS = cache.o ht.o cache_file.o pipe_buf.o cache_req.o curr_reqs.o timer.o cache_stats.o mime_map.o socket.o utils.o cJSON.o
+CACHE_OBJECTS = cache.o ht.o cache_file.o pipe_buf.o cache_req.o curr_reqs.o timer.o cache_stats.o mime_map.o socket.o utils.o unqlite.o cJSON.o
 
 -include $(CACHE_OBJECTS:.o=.d)
 
 monkey-cache.so: $(CACHE_OBJECTS)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(DEFS) -shared -o $@ $^ -lc -lm
+	$(CC) $(CFLAGS) $(LDFLAGS) $(DEFS) -shared -o $@ $^ -lc -lm -DJX9_DISABLE_BUILTIN_FUNC -DJX9_DISABLE_DISK_IO -DUNQLITE_ENABLE_THREADS
+
 
 test: test.o utils.o
 	$(CC) $(CFLAGS) $(LDFLAGS) $(DEFS) -o $@ $^ -lc -lm

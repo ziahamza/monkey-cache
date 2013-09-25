@@ -252,12 +252,25 @@ int serve_add(struct client_session *cs, struct session_request *sr, char *uri) 
     cache_file_tmp(uri, &sr->data);
     return serve_str(cs, sr, "Cache resource added sucessfully!\n");
 }
+
+void *serve_stats_cb (const char *key, void *val, void *state) {
+    cJSON *files = state, *file;
+
+    (void) key;
+
+    struct cache_file_t *f = val;
+
+    cJSON_AddItemToArray(files, file = cJSON_CreateObject());
+    cJSON_AddStringToObject(file, "uri", f->uri);
+    cJSON_AddNumberToObject(file, "size", f->size);
+
+    return files;
+}
 int serve_stats(struct client_session *cs, struct session_request *sr)
 {
-
     mk_api->header_set_http_status(sr, MK_HTTP_OK);
 
-    cJSON *root, *mem, *reqs, *files, *file;
+    cJSON *root, *mem, *reqs, *files;
     char *out;
 
     root = cJSON_CreateObject();
@@ -270,31 +283,11 @@ int serve_stats(struct client_session *cs, struct session_request *sr)
     cJSON_AddItemToObject(root, "requests", reqs = cJSON_CreateObject());
     cJSON_AddNumberToObject(reqs, "served_per_sec", ceil(cache_stats.reqs_per_sec));
 
-
     cJSON_AddItemToObject(root, "files", files = cJSON_CreateArray());
 
-    int i;
-    struct node_t *node;
-    struct cache_file_t *f;
-    for (i = 0; i < file_table->size; i++) {
-        struct node_t *next;
-        for (
-          node = file_table->store[i];
-          node != NULL;
-          node = next
-        ) {
-            next = node->next;
-            f = node->val;
-
-            cJSON_AddItemToArray(files, file = cJSON_CreateObject());
-            cJSON_AddStringToObject(file, "uri", f->uri);
-            cJSON_AddNumberToObject(file, "size", f->size);
-
-        }
-    }
+    table_each(file_table, serve_stats_cb, files);
 
     out = cJSON_Print(root);
-
 
     sr->headers.content_length = strlen(out);
     sr->headers.content_type = mime_map_get(".json");
