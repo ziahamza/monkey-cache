@@ -12,6 +12,7 @@ angular
       , conf = {
         label: attrs.label,
         data: [],
+        curvedLines: { apply: true },
         color: "#ff0000",
         lines: { show: true }
       },
@@ -31,6 +32,9 @@ angular
         show: true,
         min: 0
       },
+      series: {
+        curvedLines: {  active: true }
+      }
     });
 
     var draw = function() {

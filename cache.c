@@ -209,7 +209,7 @@ void fill_cache_headers(struct cache_file_t *file,
             if (leftover > first_buf->filled) {
                if (first_buf->filled) {
                   ret = tee(first_buf->pipe[0],
-                    file->cache_headers->pipe[1], leftover,
+                    file->cache_headers->pipe[1], first_buf->filled,
                     SPLICE_F_NONBLOCK);
 
                   mk_bug(ret <= 0);

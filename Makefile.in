@@ -10,8 +10,11 @@ CACHE_OBJECTS = cache.o unqlite_ht.o cache_file.o pipe_buf.o cache_req.o curr_re
 
 -include $(CACHE_OBJECTS:.o=.d)
 
+unqlite.o: unqlite.c
+	$(CC) $(CFLAGS) $(DEFS) -o $@ $^  -DJX9_DISABLE_BUILTIN_FUNC -DJX9_DISABLE_DISK_IO -DUNQLITE_ENABLE_THREADS
+
 monkey-cache.so: $(CACHE_OBJECTS)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(DEFS) -shared -o $@ $^ -lc -lm -DJX9_DISABLE_BUILTIN_FUNC -DJX9_DISABLE_DISK_IO -DUNQLITE_ENABLE_THREADS
+	$(CC) $(CFLAGS) $(LDFLAGS) $(DEFS) -shared -o $@ $^ -lc -lm
 
 
 test: test.o utils.o
