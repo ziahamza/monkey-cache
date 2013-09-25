@@ -16,7 +16,6 @@
 
 #include "constants.h"
 
-pthread_mutex_t table_mutex = PTHREAD_MUTEX_INITIALIZER;
 void cache_file_process_init() {}
 void cache_file_thread_init() {
     file_table = table_alloc();
@@ -58,8 +57,6 @@ struct cache_file_t *cache_file_get(const char *uri) {
     return file;
 }
 
-// need to lock table_mutex before called, should use
-// cache_file_reset otherwise!
 void file_table_reset(const char *uri) {
     struct cache_file_t *file = table_del(file_table, uri);
     if (file) {
@@ -70,9 +67,7 @@ void file_table_reset(const char *uri) {
 }
 
 void cache_file_reset(const char *uri) {
-    pthread_mutex_lock(&table_mutex);
     file_table_reset(uri);
-    pthread_mutex_unlock(&table_mutex);
     return;
 }
 
@@ -100,7 +95,6 @@ void cache_file_tick() {
 struct cache_file_t *cache_file_tmp(const char *uri, mk_pointer *ptr) {
 
     struct cache_file_t *file = NULL;
-    pthread_mutex_lock(&table_mutex);
 
     file_table_reset(uri);
 
@@ -173,9 +167,11 @@ struct cache_file_t *cache_file_tmp(const char *uri, mk_pointer *ptr) {
     }
 
     gettimeofday(&file->last_accessed, NULL);
-    table_add(file_table, file->uri, file);
+    if (table_add(file_table, file->uri, file) < 0) {
+        cache_file_free(file);
+        return NULL;
+    }
 
-    pthread_mutex_unlock(&table_mutex);
     return file;
 }
 
@@ -190,7 +186,6 @@ struct cache_file_t *cache_file_new(const char *path, const char *uri) {
     if (st.st_size <= 0)
         return NULL;
 
-    pthread_mutex_lock(&table_mutex);
 
     // another check in case its been already added
     file = table_get(file_table, uri);
@@ -247,9 +242,11 @@ struct cache_file_t *cache_file_new(const char *path, const char *uri) {
         file->evictable = 1;
 
         gettimeofday(&file->last_accessed, NULL);
-        table_add(file_table, file->uri, file);
+        if (table_add(file_table, file->uri, file) < 0) {
+            cache_file_free(file);
+            return NULL;
+        }
     }
-    pthread_mutex_unlock(&table_mutex);
 
     return file;
 }

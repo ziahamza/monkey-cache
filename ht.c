@@ -3,9 +3,11 @@
 #include <stdlib.h>
 #include  <stdint.h>
 #include "ht.h"
+#include <pthread.h>
 
 #define HT_MIN_SIZE 8192
 
+pthread_mutex_t table_mutex = PTHREAD_MUTEX_INITIALIZER;
 struct node_t {
   // provided by the caller
   const char *key;
@@ -94,8 +96,9 @@ void * table_get(struct table_t *table, const char *key) {
   return NULL;
 }
 
-void table_add(struct table_t *table, const char *key, void *val) {
+int  table_add(struct table_t *table, const char *key, void *val) {
 
+  pthread_mutex_lock(&table_mutex);
   size_t hash = key_hash(key, table->size);
 
   struct node_t *node = calloc(1, sizeof(struct node_t));
@@ -104,9 +107,12 @@ void table_add(struct table_t *table, const char *key, void *val) {
   node->next = table->store[hash];
 
   table->store[hash] = node;
+  pthread_mutex_unlock(&table_mutex);
+  return 0;
 }
 
 void *table_del(struct table_t *table, const char *key) {
+  pthread_mutex_lock(&table_mutex);
   size_t hash = key_hash(key, table->size);
   struct node_t *node = table->store[hash], *prev;
   void *val = NULL;
@@ -129,6 +135,7 @@ void *table_del(struct table_t *table, const char *key) {
     }
   }
 
+  pthread_mutex_unlock(&table_mutex);
   return val;
 }
 

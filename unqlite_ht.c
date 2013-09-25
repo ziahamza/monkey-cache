@@ -71,11 +71,15 @@ void * table_get(struct table_t *table, const char *key) {
   return node.data;
 }
 
-void table_add(struct table_t *table, const char *key, void *val) {
+int table_add(struct table_t *table, const char *key, void *val) {
   struct node_t node;
   node.data = val;
 
-  mk_bug(unqlite_kv_store(table->pDb, key, -1, &node, sizeof(node)) != UNQLITE_OK);
+  if (unqlite_kv_store(table->pDb, key, -1, &node, sizeof(node)) != UNQLITE_OK) {
+    return -1;
+  }
+
+  return 0;
 }
 
 void *table_del(struct table_t *table, const char *key) {

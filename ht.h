@@ -19,7 +19,7 @@ void *table_get(struct table_t *, const char *);
 void *table_each(struct table_t *, table_cb_t cb, void *state);
 
 // key string managed by the caller and used till table_del
-void table_add(struct table_t *, const char *, void *);
+int table_add(struct table_t *, const char *, void *);
 
 // returns the added object after delete
 void *table_del(struct table_t *, const char *);

@@ -5,7 +5,6 @@
 
 #include "ht.h"
 #include "constants.h"
-#include <pthread.h>
 
 struct table_t *file_table;
 
